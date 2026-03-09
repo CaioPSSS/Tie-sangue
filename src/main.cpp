@@ -13,6 +13,7 @@
 #include "guidance/TECS.h"
 #include "sensors/SensorManager.h"
 #include "sensors/GPSManager.h"
+#include "sensors/BatteryManager.h"
 #include "hardware/OutputManager.h"
 #include "common/SharedTypes.h"
 #include "comms/LoRaManager.h"
@@ -85,6 +86,7 @@ void setup() {
     SensorManager::initSensors();
     OutputManager::init();
     GPSManager::init();
+    BatteryManager::init();
 
     // --- INSTANCIAÇÃO DAS TAREFAS NO CORE 1 (Prioridade Máxima) ---
     xTaskCreatePinnedToCore(Task_FlightLoop, "FlightLoop", 8192, NULL, 5, NULL, 1);
@@ -384,7 +386,23 @@ void Task_System_Mon(void *pvParameters) {
     const TickType_t xFrequency = pdMS_TO_TICKS(1000); // 1 Hz
 
     for(;;) {
-        // TODO: Monitorar ADC da Bateria e disparar Failsafe se o rádio cair
+        // 1. LER TENSÃO DA BATERIA (2S Li-ion)
+        float current_vbat = BatteryManager::readVoltage();
+
+        // 2. ESCREVER NO ESTADO GLOBAL PARA A TELEMETRIA
+        if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+            globalState.battery_voltage = current_vbat;
+            xSemaphoreGive(stateMutex);
+        }
+
+        // 3. ALARME CRÍTICO DE BATERIA BAIXA
+        // Li-ion 2S: Max 8.4V | Nominal 7.4V | Crítico 6.0V a 6.4V
+        if (current_vbat < 6.4f) {
+            Serial.printf("ALERTA: BATERIA CRÍTICA! (%.2f V)\n", current_vbat);
+            // TODO: Quando tivermos a Máquina de Estados, aqui forçaremos o RTH!
+        }
+
+        // Aguarda fechar o ciclo de 1 segundo
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
