@@ -1,4 +1,5 @@
 #include "SensorManager.h"
+#include "driver/i2c.h" // Acesso direto ao núcleo do ESP-IDF!
 
 // Endereços I2C
 #define MPU6050_ADDR 0x68
@@ -8,25 +9,37 @@
 #define ACCEL_SCALE 4096.0f
 #define GYRO_SCALE  16.4f
 
+// Vincula o MPU6050 à porta I2C número 0 do ESP32 (Acelerador de Hardware)
+#define I2C_MASTER_NUM I2C_NUM_0 
+
 float SensorManager::gyroBias[3] = {0, 0, 0};
+float SensorManager::ground_pressure_pa = 101325.0f; // Nível do mar por defeito
 BMP280_Calib SensorManager::bmp_calib;
 int32_t SensorManager::t_fine;
 
-void SensorManager::initSensors() {
-    // 1. Inicializa o I2C Rápido (Core 1 -> MPU6050)
-    Wire.begin(I2C_FAST_SDA, I2C_FAST_SCL, 400000);
-    Wire.setTimeOut(2); // Timeout de 2ms. Se o MPU não responder, aborta e não trava o Core 1!
+NotchFilter SensorManager::notch_gx;
+NotchFilter SensorManager::notch_gy;
+NotchFilter SensorManager::notch_gz;
 
-    // 2. Inicializa o I2C Lento (Core 0 -> BMP280)
+void SensorManager::initSensors() {
+    // 1. INICIALIZA O I2C0 NATIVO DO ESP-IDF (Core 1 -> MPU6050) - Não bloqueante!
+    i2c_config_t conf = {};
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = I2C_FAST_SDA;
+    conf.scl_io_num = I2C_FAST_SCL;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = 400000; // 400 kHz Fast Mode
+    i2c_param_config(I2C_MASTER_NUM, &conf);
+    i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+
+    // 2. Inicializa o I2C Lento padrão (Core 0 -> BMP280)
     Wire1.begin(I2C_SLOW_SDA, I2C_SLOW_SCL, 400000);
     Wire1.setTimeOut(5);
 
     initMPU6050();
     initBMP280();
 }
-
-// Inicialização das variáveis estáticas
-float SensorManager::ground_pressure_pa = 101325.0f; // Nível do mar por defeito
 
 // ==========================================
 // CALIBRAÇÃO DO GIROSCÓPIO (FIM DO DRIFT)
@@ -48,10 +61,10 @@ void SensorManager::calibrateIMU() {
         sum_gx += tempIMU.gx;
         sum_gy += tempIMU.gy;
         sum_gz += tempIMU.gz;
-        delay(2); // Intervalo para não saturar o bus I2C
+        delay(2); 
     }
 
-    // Calcula a média do erro estático (O que o giroscópio lê quando está parado)
+    // Calcula a média do erro estático
     gyroBias[0] = sum_gx / samples;
     gyroBias[1] = sum_gy / samples;
     gyroBias[2] = sum_gz / samples;
@@ -76,7 +89,7 @@ void SensorManager::calibrateBaro() {
             sum_p += temp_p;
             valid_samples++;
         }
-        delay(20); // O Barómetro tem IIR Filter, precisa de tempo entre leituras
+        delay(20); 
     }
 
     if (valid_samples > 0) {
@@ -92,48 +105,62 @@ void SensorManager::calibrateBaro() {
 // ==========================================
 float SensorManager::getAltitudeAGL(float current_pressure_pa) {
     if (current_pressure_pa <= 0) return 0.0f;
-    
-    // Esta é a magia: Usamos a pressão de solo que acabámos de gravar 
-    // em vez da pressão do nível do mar (101325). 
-    // Isto garante que o avião reporte 0 metros enquanto estiver na relva da pista!
     return 44330.0f * (1.0f - pow(current_pressure_pa / ground_pressure_pa, 0.190295f));
 }
 
+// ==========================================
+// INICIALIZAÇÃO E HARDWARE ESP-IDF (MPU6050)
+// ==========================================
 void SensorManager::initMPU6050() {
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x6B); // Power Management 1
-    Wire.write(0x00); // Acorda o sensor
-    if (Wire.endTransmission() != 0) {
-        Serial.println("ERRO: MPU6050 não detectado! Tentando Hard Reset...");
-        recoverI2CBus(I2C_FAST_SDA, I2C_FAST_SCL);
-        Wire.begin(I2C_FAST_SDA, I2C_FAST_SCL, 400000);
-    }
+    // Comando para Acordar o Sensor usando ESP-IDF
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, 0x6B, true); // Power Management
+    i2c_master_write_byte(cmd, 0x00, true); // Acorda
+    i2c_master_stop(cmd);
+    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(10));
+    i2c_cmd_link_delete(cmd);
 
-    // Configura Filtro Passa-Baixa Digital (DLPF) para ~42Hz
-    // EXTREMAMENTE NECESSÁRIO para limpar vibração da hélice (propwash)
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x1A); // CONFIG
-    Wire.write(0x03); 
-    Wire.endTransmission();
+    // Configurações de Filtro de Hardware (DLPF 20Hz - Blindagem contra propwash)
+    cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, 0x1A, true); 
+    i2c_master_write_byte(cmd, 0x04, true); // 0x04 = 20Hz
+    i2c_master_stop(cmd);
+    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(10));
+    i2c_cmd_link_delete(cmd);
 
-    // Configura Giroscópio para +/- 2000 graus/seg (Dinâmica de Asa Voadora)
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x1B); // GYRO_CONFIG
-    Wire.write(0x18); 
-    Wire.endTransmission();
+    // Configuração Giroscópio (+/- 2000 dps)
+    cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, 0x1B, true); 
+    i2c_master_write_byte(cmd, 0x18, true); 
+    i2c_master_stop(cmd);
+    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(10));
+    i2c_cmd_link_delete(cmd);
 
-    // Configura Acelerômetro para +/- 8g (Evita saturação em curvas L1 violentas)
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x1C); // ACCEL_CONFIG
-    Wire.write(0x10); 
-    Wire.endTransmission();
+    // Configuração Acelerómetro (+/- 8g)
+    cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, 0x1C, true); 
+    i2c_master_write_byte(cmd, 0x10, true); 
+    i2c_master_stop(cmd);
+    i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(10));
+    i2c_cmd_link_delete(cmd);
+
+    // Inicializa Filtros Notch de Software (Centro 150Hz, Largura 50Hz, dt 0.004s)
+    notch_gx.init(150.0f, 50.0f, 0.004f);
+    notch_gy.init(150.0f, 50.0f, 0.004f);
+    notch_gz.init(150.0f, 50.0f, 0.004f);
 }
 
 void SensorManager::initBMP280() {
-    // 1. Lê a ROM de calibração do chip primeiro
     readBMP280Calibration();
 
-    // 2. Configurações de Filtro e Oversampling
     Wire1.beginTransmission(BMP280_ADDR);
     Wire1.write(0xF4); // ctrl_meas
     Wire1.write(0x2F); // Temp x1, Pressure x4, Normal mode
@@ -167,31 +194,51 @@ void SensorManager::readBMP280Calibration() {
     }
 }
 
-// Leitura otimizada em "Burst" (14 bytes de uma vez) para o Core 1
+// =================================================================
+// LEITURA DE ALTA VELOCIDADE E HARDWARE TIMEOUT (ESP-IDF)
+// =================================================================
 bool SensorManager::readIMU(RawIMU &imuData) {
-    Wire.beginTransmission(MPU6050_ADDR);
-    Wire.write(0x3B); // Registrador inicial do Acelerômetro
-    if (Wire.endTransmission(false) != 0) return false; // Falhou, não trava
+    uint8_t buffer[14];
+    
+    // Constrói a sequência de comandos para o Controlador DMA do ESP32
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, 0x3B, true); // Pede para ler a partir do ACCEL_XOUT_H
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (MPU6050_ADDR << 1) | I2C_MASTER_READ, true);
+    i2c_master_read(cmd, buffer, 14, I2C_MASTER_LAST_NACK); // Lê 14 bytes de rajada
+    i2c_master_stop(cmd);
 
-    uint8_t bytesRead = Wire.requestFrom(MPU6050_ADDR, 14, true);
-    if (bytesRead != 14) return false; // Erro de I2C, descarta leitura
+    // Dispara o hardware! Timeout estrito de 1 TICK (1 ms).
+    // Se o MPU6050 não responder, o ESP32 aborta e o Core 1 não trava.
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1));
+    i2c_cmd_link_delete(cmd);
 
-    // Reconstrução rápida por bitshift
-    int16_t ax = (Wire.read() << 8 | Wire.read());
-    int16_t ay = (Wire.read() << 8 | Wire.read());
-    int16_t az = (Wire.read() << 8 | Wire.read());
-    Wire.read(); Wire.read(); // Ignora os 2 bytes de temperatura interna
-    int16_t gx = (Wire.read() << 8 | Wire.read());
-    int16_t gy = (Wire.read() << 8 | Wire.read());
-    int16_t gz = (Wire.read() << 8 | Wire.read());
+    // Se falhar em ler, devolve false (Task usa os dados antigos/inerciais)
+    if (ret != ESP_OK) return false;
 
-    // Conversão para escalas físicas reais
+    // Reconstrói os inteiros
+    int16_t ax = (buffer[0] << 8) | buffer[1];
+    int16_t ay = (buffer[2] << 8) | buffer[3];
+    int16_t az = (buffer[4] << 8) | buffer[5];
+    int16_t gx = (buffer[8] << 8) | buffer[9];
+    int16_t gy = (buffer[10] << 8) | buffer[11];
+    int16_t gz = (buffer[12] << 8) | buffer[13];
+
+    // Escala e Filtra o Bias
     imuData.ax = (float)ax / ACCEL_SCALE;
     imuData.ay = (float)ay / ACCEL_SCALE;
     imuData.az = (float)az / ACCEL_SCALE;
-    imuData.gx = (float)gx / GYRO_SCALE - gyroBias[0];
-    imuData.gy = (float)gy / GYRO_SCALE - gyroBias[1];
-    imuData.gz = (float)gz / GYRO_SCALE - gyroBias[2];
+    
+    imuData.gx = ((float)gx / GYRO_SCALE) - gyroBias[0];
+    imuData.gy = ((float)gy / GYRO_SCALE) - gyroBias[1];
+    imuData.gz = ((float)gz / GYRO_SCALE) - gyroBias[2];
+
+    // A MÁGICA ACONTECE AQUI: Aplica o Filtro Notch para exterminar o ruído harmónico
+    imuData.gx = notch_gx.apply(imuData.gx);
+    imuData.gy = notch_gy.apply(imuData.gy);
+    imuData.gz = notch_gz.apply(imuData.gz);
 
     return true;
 }
@@ -211,19 +258,16 @@ bool SensorManager::readBaro(float &pressure, float &temperature) {
     int32_t adc_P = (Wire1.read() << 12) | (Wire1.read() << 4) | (Wire1.read() >> 4);
     int32_t adc_T = (Wire1.read() << 12) | (Wire1.read() << 4) | (Wire1.read() >> 4);
 
-    // ERROR CHECK 3: Sensor morto / desconectado no barramento (Geralmente retorna 0x00000 ou 0xFFFFF)
+    // ERROR CHECK 3: Sensor morto
     if (adc_P == 0 || adc_P == 0xFFFFF) return false;
 
-    // --- MATEMÁTICA OFICIAL DE COMPENSAÇÃO DA BOSCH ---
-    
-    // Compensação de Temperatura (Necessária para a pressão)
+    // --- MATEMÁTICA OFICIAL DA BOSCH ---
     int32_t var1_t = ((((adc_T >> 3) - ((int32_t)bmp_calib.dig_T1 << 1))) * ((int32_t)bmp_calib.dig_T2)) >> 11;
     int32_t var2_t = (((((adc_T >> 4) - ((int32_t)bmp_calib.dig_T1)) * ((adc_T >> 4) - ((int32_t)bmp_calib.dig_T1))) >> 12) * ((int32_t)bmp_calib.dig_T3)) >> 14;
     t_fine = var1_t + var2_t;
     temperature = (t_fine * 5 + 128) >> 8;
     temperature /= 100.0f; // Celsius
 
-    // Compensação de Pressão
     int64_t var1_p, var2_p, p;
     var1_p = ((int64_t)t_fine) - 128000;
     var2_p = var1_p * var1_p * (int64_t)bmp_calib.dig_P6;
@@ -232,7 +276,7 @@ bool SensorManager::readBaro(float &pressure, float &temperature) {
     var1_p = ((var1_p * var1_p * (int64_t)bmp_calib.dig_P3) >> 8) + ((var1_p * (int64_t)bmp_calib.dig_P2) << 12);
     var1_p = (((((int64_t)1) << 47) + var1_p)) * ((int64_t)bmp_calib.dig_P1) >> 33;
 
-    if (var1_p == 0) return false; // Evita divisão por zero matemática!
+    if (var1_p == 0) return false;
 
     p = 1048576 - adc_P;
     p = (((p << 31) - var2_p) * 3125) / var1_p;
@@ -242,16 +286,14 @@ bool SensorManager::readBaro(float &pressure, float &temperature) {
     
     pressure = (float)p / 256.0f; // Pascals (Pa)
 
-    // ERROR CHECK 4 (Sanity Bounds):
-    // Se a pressão estiver fora dos limites habitáveis da Terra, é ruído.
+    // ERROR CHECK 4 (Sanity Bounds)
     if (pressure < 60000.0f || pressure > 115000.0f) return false;
 
-    return true; // Leitura limpa, segura e calibrada!
+    return true; 
 }
 
 // =================================================================
-// PROTOCOLO DE FAILSAFE DE HARDWARE (Conforme especificado no manual)
-// Purga a capacitância parasita e "desengasga" escravos I2C teimosos
+// PROTOCOLO DE FAILSAFE DE HARDWARE
 // =================================================================
 void SensorManager::recoverI2CBus(uint8_t sda_pin, uint8_t scl_pin) {
     pinMode(sda_pin, INPUT_PULLUP);
@@ -259,7 +301,6 @@ void SensorManager::recoverI2CBus(uint8_t sda_pin, uint8_t scl_pin) {
     delay(10);
     
     pinMode(scl_pin, OUTPUT);
-    // Pulsa o clock 9 vezes para forçar o escravo a liberar o SDA
     for (int i = 0; i < 9; i++) {
         digitalWrite(scl_pin, LOW);
         delayMicroseconds(5);
@@ -267,7 +308,6 @@ void SensorManager::recoverI2CBus(uint8_t sda_pin, uint8_t scl_pin) {
         delayMicroseconds(5);
     }
     
-    // Gera condição de STOP física
     pinMode(sda_pin, OUTPUT);
     digitalWrite(sda_pin, LOW);
     delayMicroseconds(5);

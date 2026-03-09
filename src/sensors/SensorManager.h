@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include "../utils/NotchFilter.h"
 
 #define I2C_FAST_SDA 21
 #define I2C_FAST_SCL 22
@@ -47,6 +48,10 @@ private:
     static void initMPU6050();
     static void initBMP280();
     static void readBMP280Calibration();
+
+    static NotchFilter notch_gx;
+    static NotchFilter notch_gy;
+    static NotchFilter notch_gz;
 };
 
 #endif

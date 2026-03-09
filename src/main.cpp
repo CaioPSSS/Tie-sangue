@@ -3,6 +3,7 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include <freertos/queue.h>
+#include <esp_task_wdt.h>
 
 // Inclusão das nossas classes de engenharia
 #include "control/PID.h"
@@ -66,11 +67,14 @@ void setup() {
     // Inicialização dos Primitivos de Sincronização do FreeRTOS
     stateMutex = xSemaphoreCreateMutex();
     telemetryQueue = xQueueCreate(5, sizeof(PacketTelemetryLoRa_t));
-
+    
     if (stateMutex == NULL || telemetryQueue == NULL) {
         Serial.println("ERRO CRÍTICO: Falha ao alocar memória para o RTOS.");
         while(1); // Trava o sistema
     }
+
+    // Inicializa o WDT global com timeout de 2 segundos (O dobro do loop mais lento)
+    esp_task_wdt_init(2, true);
 
     // ==========================================
     // INICIALIZAÇÃO DOS MÓDULOS DE HARDWARE
@@ -106,9 +110,21 @@ void loop() {}
 void Task_FlightLoop(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(4); 
-    const float dt = 0.004f; 
+    
+    uint32_t last_time_us = micros(); // Inicializa o relógio
+
+    esp_task_wdt_add(NULL); // Adiciona a Task de Voo ao WDT para monitoramento de travamentos
 
     for(;;) {
+        uint32_t now_us = micros();
+        float dt = (now_us - last_time_us) / 1000000.0f; // Cálculo dinâmico cravado
+        last_time_us = now_us;
+        
+        // Proteção extra: se o dt explodir por um travamento, limita a 10ms
+        if (dt > 0.010f) dt = 0.004f;
+
+        esp_task_wdt_reset(); // Reseta o WDT a cada ciclo para evitar resets indesejados
+        
         // 1. Ler Sensores (MPU6050)
         RawIMU imuData;
         SensorManager::readIMU(imuData);
@@ -162,12 +178,23 @@ void Task_FlightLoop(void *pvParameters) {
             mixer_pitch_cmd = fsm.final_pitch_target;
         } else {
             // Cálculo dinâmico do TPA 
-            float throttle_percent = constrain((fsm.final_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
             float tpa_factor = 1.0f;
-            if (throttle_percent > 0.5f) {
-                tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
-            }
-
+            if (current_mode == MODE_AUTO || current_mode == MODE_RTH || current_mode == MODE_HOLD) {
+                // TPA baseado na Cinética (GPS Speed) para os modos autónomos
+                // Exemplo: Atenuação linear a partir de 15 m/s, limitando o corte a 40%
+                if (globalState.ground_speed_ms > 15.0f) {
+                    tpa_factor = 1.0f - ((globalState.ground_speed_ms - 15.0f) * 0.03f);
+                }
+            } else {
+                // TPA Clássico baseado no acelerador humano para modos Acro/Angle
+                float throttle_percent = constrain((fsm.final_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
+                if (throttle_percent > 0.5f) {
+                    tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
+                }
+        }
+        
+        // Garante que o ganho nunca fica perigosamente baixo ou invertido
+        tpa_factor = constrain(tpa_factor, 0.4f, 1.0f);
             // Cascata PID (Angle -> Rate)
             float desired_roll_rate = rollAnglePID.compute(fsm.final_roll_target, ahrs.roll, dt, 1.0f);
             float desired_pitch_rate = pitchAnglePID.compute(fsm.final_pitch_target, ahrs.pitch, dt, 1.0f);
@@ -189,11 +216,20 @@ void Task_FlightLoop(void *pvParameters) {
 // CORE 1: MALHA DE NAVEGAÇÃO (50Hz) - INTELIGÊNCIA
 // ==========================================
 void Task_Navigation(void *pvParameters) {
+
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50 Hz
-    const float dt = 0.02f;
+    const TickType_t xFrequency = pdMS_TO_TICKS(4); 
+    
+    uint32_t last_time_us = micros(); // Inicializa o relógio
 
     for(;;) {
+        uint32_t now_us = micros();
+        float dt = (now_us - last_time_us) / 1000000.0f; // Cálculo dinâmico cravado
+        last_time_us = now_us;
+        
+        // Proteção extra: se o dt explodir por um travamento, limita a 10ms
+        if (dt > 0.010f) dt = 0.004f;
+
         // 1. Variáveis de Estado Local
         float current_earth_z_accel = 0.0f;
         float current_ground_speed = 0.0f; 
@@ -262,6 +298,18 @@ void Task_Navigation(void *pvParameters) {
         }
 
         // 5. PROCESSAMENTO L1 E TECS
+
+        // Correção de COG (Course Over Ground) para o AHRS Yaw para reduzir o drift durante a navegação
+        if (has_gps_fix && current_ground_speed > 3.0f) {
+            float cog_error = current_course - ahrs.yaw;
+            // Normaliza o erro para -180 a 180
+            while (cog_error > 180.0f) cog_error -= 360.0f;
+            while (cog_error < -180.0f) cog_error += 360.0f;
+            
+            // Corrige lentamente o drift na própria variável da IMU
+            ahrs.yaw += cog_error * 0.05f * dt; 
+        }
+
         if (has_gps_fix) {
             l1Guidance.compute(current_lat, current_lon, current_ground_speed, current_course, 
                                wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon);
@@ -269,9 +317,19 @@ void Task_Navigation(void *pvParameters) {
             l1Guidance.roll_cmd_deg = 0.0f; // Sem GPS, mantém a asa nivelada lateralmente
         }
 
+        // Diferença angular entre para onde o nariz aponta e para onde o VANT realmente vai
+        float wind_correction_angle = (current_course - ahrs.yaw) * (PI / 180.0f);
+        
+        // Estimativa de Airspeed: V = V_ground * cos(Angulo de Deriva)
+        float synthetic_airspeed = current_ground_speed * cos(wind_correction_angle);
+        
+        // Proteção contra ventos extremos de cauda (Tailwind)
+        if (synthetic_airspeed < 5.0f) synthetic_airspeed = 5.0f; 
+
+        // O TECS agora baseia as necessidades cinéticas no ar real passando pela asa
         tecs.compute(target_alt, verticalFilter.estimated_altitude_m, 
                      verticalFilter.vertical_speed_ms, 
-                     target_speed, current_ground_speed, dt);
+                     target_speed, synthetic_airspeed, dt);
 
         // 6. ENVIAR COMANDOS PARA O CORE 1
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
