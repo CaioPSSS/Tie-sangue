@@ -183,6 +183,7 @@ void Task_FlightLoop(void *pvParameters) {
         fsm.update(current_mode, 
                    rc_roll, rc_pitch, rc_throttle,
                    nav_roll, nav_pitch, nav_throttle,
+                   dt,
                    rollAnglePID, pitchAnglePID, rollRatePID, pitchRatePID);
 
         // ========================================================
@@ -381,7 +382,9 @@ void Task_Navigation(void *pvParameters) {
 // CORE 0: TAREFAS DE COMUNICAÇÃO E SISTEMA
 // ==========================================
 void Task_GPS_Parser(void *pvParameters) {
+    esp_task_wdt_add(NULL);
     for(;;) {
+        esp_task_wdt_reset();
         if (GPSManager::update()) {
             if (GPSManager::hasValidFix()) {
                 if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
@@ -404,6 +407,7 @@ void Task_GPS_Parser(void *pvParameters) {
 }
 
 void Task_LoRa_Comm(void *pvParameters) {
+    esp_task_wdt_add(NULL);
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(100); // 10 Hz
 
@@ -417,6 +421,7 @@ void Task_LoRa_Comm(void *pvParameters) {
     LoRa.receive(); 
 
     for(;;) {
+        esp_task_wdt_reset();
         // 1. OUVIR A BASE (MULTIPLEXAÇÃO)
         LoRaPacketType pktType = LoRaManager::receive(uplinkPacket, wpPacket, last_rssi);
 
@@ -461,10 +466,12 @@ void Task_LoRa_Comm(void *pvParameters) {
 }
 
 void Task_System_Mon(void *pvParameters) {
+    esp_task_wdt_add(NULL);
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(1000); // 1 Hz
 
     for(;;) {
+        esp_task_wdt_reset();
         // 1. Lê a Bateria
         float current_vbat = BatteryManager::readVoltage();
 
