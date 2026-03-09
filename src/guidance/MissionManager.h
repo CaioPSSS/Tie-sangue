@@ -58,6 +58,9 @@ private:
     // Coordenadas de Casa (Home)
     Waypoint home_wp;
 
+    // Variável para garantir que o Home seja travado apenas uma vez por voo
+    bool has_valid_home;
+
     // Variáveis da Máquina de Estados do RTH
     RTH_State rth_state;
     Waypoint rth_climb_point; // Ponto virtual para subir em espiral antes de voltar
