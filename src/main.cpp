@@ -99,11 +99,11 @@ void Task_FlightLoop(void *pvParameters) {
 
     for(;;) {
         // 1. Ler Sensores (MPU6050)
-        // RawIMU imuData;
-        // SensorManager::readIMU(imuData);
+        RawIMU imuData;
+        SensorManager::readIMU(imuData);
 
         // 2. Atualizar AHRS (Filtro Mahony)
-        // ahrs.update(imuData.gx, imuData.gy, imuData.gz, imuData.ax, imuData.ay, imuData.az, dt);
+        ahrs.update(imuData.gx, imuData.gy, imuData.gz, imuData.ax, imuData.ay, imuData.az, dt);
 
         // --- CALCULO TPA (Throttle PID Attenuation) ---
         float current_throttle_pwm = 1500.0f; // TODO: Ler do receptor de rádio (ELRS)
