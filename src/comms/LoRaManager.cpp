@@ -49,3 +49,25 @@ void LoRaManager::sendTelemetry(PacketTelemetryLoRa_t &packet) {
     // o que não afeta a nossa Task de 100ms no Core 0)
     LoRa.endPacket(); 
 }
+
+bool LoRaManager::receiveUplink(PacketUplinkLoRa_t &uplinkData, int8_t &rssi) {
+    // Verifica se chegou algo no buffer do SX1278
+    int packetSize = LoRa.parsePacket();
+    
+    // Se o tamanho bater exatamente com a nossa struct compactada (4 bytes)
+    if (packetSize == sizeof(PacketUplinkLoRa_t)) {
+        
+        // Copia os dados do rádio direto para a memória da struct
+        LoRa.readBytes((uint8_t*)&uplinkData, sizeof(PacketUplinkLoRa_t));
+        
+        // Validação de Segurança (Ignora ruído ou pacotes corrompidos)
+        uint8_t calc_crc = CRC::calculateCRC8((uint8_t*)&uplinkData, sizeof(PacketUplinkLoRa_t) - 1);
+        
+        if (calc_crc == uplinkData.checksum_crc8 && uplinkData.sync_header == 0xBB) {
+            // Pacote perfeito! Lemos o RSSI (Qualidade do sinal de quem enviou)
+            rssi = LoRa.packetRssi(); 
+            return true; 
+        }
+    }
+    return false; // Não chegou nada ou pacote era lixo eletromagnético
+}

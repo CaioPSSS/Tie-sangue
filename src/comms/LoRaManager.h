@@ -22,6 +22,9 @@ public:
 
     // Envia a struct compactada
     static void sendTelemetry(PacketTelemetryLoRa_t &packet);
+
+    // Lê os comandos enviados pela Base de Solo (Uplink)
+    static bool receiveUplink(PacketUplinkLoRa_t &uplinkData, int8_t &rssi);
 };
 
 #endif

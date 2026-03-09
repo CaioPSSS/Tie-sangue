@@ -56,4 +56,15 @@ enum FlightMode {
     MODE_RTH
 };
 
+// --------------------------------------------------------
+// 3. ESTRUTURA DE COMANDOS (UPLINK: BASE -> DRONE) - 4 BYTES
+// Usada para o avião ler ordens de emergência ou mudança de modo
+// --------------------------------------------------------
+typedef struct __attribute__((packed)) {
+    uint8_t   sync_header;   // Identificador de pacote (Ex: 0xBB)
+    uint8_t   command_id;    // ID da ação (Ex: 1 = Mudar Modo, 2 = Atualizar WP)
+    uint8_t   payload;       // Valor da ação (Ex: MODE_RTH)
+    uint8_t   checksum_crc8; // Validador
+} PacketUplinkLoRa_t;
+
 #endif

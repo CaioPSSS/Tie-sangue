@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/queue.h>
 #include "common/SharedTypes.h"
+#include "comms/LoRaManager.h"
 
 // Inclusão das nossas classes de engenharia
 #include "control/PID.h"
@@ -12,7 +13,7 @@
 #include "guidance/VerticalFilter.h"
 #include "guidance/L1_Guidance.h"
 #include "guidance/TECS.h"
-// #include "sensors/SensorManager.h" // Descomente quando criar fisicamente o arquivo
+#include "sensors/SensorManager.h"
 
 // ==========================================
 // VARIÁVEIS GLOBAIS DE IPC (Inter-Process Comm)
@@ -64,8 +65,11 @@ void setup() {
         while(1); // Trava o sistema
     }
 
-    // ONDE INICIAR OS SENSORES:
-    // SensorManager::initSensors(); 
+    //INICIAR O LORA:
+    LoRaManager::init();
+
+    //INICIAR OS SENSORES:
+    SensorManager::initSensors(); 
 
     // --- INSTANCIAÇÃO DAS TAREFAS NO CORE 1 (Prioridade Máxima) ---
     xTaskCreatePinnedToCore(Task_FlightLoop, "FlightLoop", 8192, NULL, 5, NULL, 1);
@@ -210,12 +214,62 @@ void Task_GPS_Parser(void *pvParameters) {
 
 void Task_LoRa_Comm(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(100); // 10 Hz
+    const TickType_t xFrequency = pdMS_TO_TICKS(100); // 10 Hz (100ms)
 
     PacketTelemetryLoRa_t telemetryPacket;
+    telemetryPacket.sync_header = 0xAA; // Byte fixo de Telemetria (TX)
+
+    PacketUplinkLoRa_t uplinkPacket;
+    int8_t last_rssi = -127; // Sinal péssimo por padrão
+
+    // Coloca o módulo em modo de escuta assim que a tarefa inicia
+    LoRa.receive(); 
 
     for(;;) {
-        // TODO: Ler globalState, preencher telemetryPacket e enviar SPI
+        // =======================================================
+        // 1. OUVIR A BASE (UPLINK - RECEÇÃO)
+        // =======================================================
+        if (LoRaManager::receiveUplink(uplinkPacket, last_rssi)) {
+            // Chegou um comando seguro e validado pelo CRC8!
+            Serial.printf("Comando Recebido! ID: %d, Payload: %d\n", uplinkPacket.command_id, uplinkPacket.payload);
+            
+            // Exemplo de execução: A base mandou forçar o Return To Home (Comando ID = 1)
+            if (uplinkPacket.command_id == 1) { 
+                if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+                    // globalState.fsm_mode = uplinkPacket.payload; // Força a Máquina de Estados (Futuro)
+                    xSemaphoreGive(stateMutex);
+                }
+            }
+        }
+
+        // =======================================================
+        // 2. FALAR COM A BASE (TELEMETRIA - TRANSMISSÃO)
+        // =======================================================
+        if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+            telemetryPacket.fsm_state       = MODE_AUTO; 
+            telemetryPacket.altitude_cm     = (int16_t)(globalState.altitude_m * 100.0f);
+            telemetryPacket.heading_deg_10  = (uint16_t)(globalState.gps_course_deg * 10.0f);
+            telemetryPacket.latitude_gps    = globalState.lat; 
+            telemetryPacket.longitude_gps   = globalState.lon; 
+            telemetryPacket.battery_volt_mv = (uint16_t)(globalState.battery_voltage * 1000.0f);
+            
+            // Enviamos para a Ground Station a qualidade do sinal que chegou no avião!
+            // Assim o piloto no chão sabe se o avião está a ouvi-lo bem.
+            telemetryPacket.rssi_uplink     = last_rssi; 
+            
+            xSemaphoreGive(stateMutex);
+        }
+
+        LoRaManager::sendTelemetry(telemetryPacket); // Envia (Demora uns ~20ms em SF8)
+
+        // =======================================================
+        // 3. VOLTAR A ESCUTAR
+        // =======================================================
+        // Como o sendTelemetry() muda o chip para modo TX, 
+        // TEMOS obrigatoriamente de mandá-lo voltar para RX (Escuta).
+        LoRa.receive();
+
+        // 4. Aguarda até fechar exatos 100ms desde o início do loop
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
