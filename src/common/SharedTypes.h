@@ -14,7 +14,7 @@ typedef struct __attribute__((packed)) {
     uint16_t  heading_deg_10;   // Proa em décimos de grau (Ex: 3599 = 359.9º)
     int32_t   latitude_gps;     // Lat bruta * 10^7
     int32_t   longitude_gps;    // Lon bruta * 10^7
-    uint16_t  battery_volt_mv;  // Tensão da LiPo em milivolts
+    uint16_t  battery_volt_mv;  // Tensão da Li-ion em milivolts
     int8_t    rssi_uplink;      // Qualidade do sinal LoRa
     uint8_t   checksum_crc8;    // Validador de integridade do pacote
 } PacketTelemetryLoRa_t;

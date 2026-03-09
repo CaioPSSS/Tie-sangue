@@ -25,6 +25,14 @@ void Task_LoRa_Comm(void *pvParameters);
 void Task_System_Mon(void *pvParameters);
 
 // ==========================================
+// INSTÂNCIA DOS OBJETOS DE CONTROLE (Globais)
+// ==========================================
+// PIDs de Rate (Taxa) -> P, I, D, FF, Max_I, Max_Out
+#include "control/PID.h"
+PID rollRatePID(0.5, 0.1, 0.02, 0.8, 100.0, 500.0);
+PID pitchRatePID(0.6, 0.15, 0.03, 0.9, 100.0, 500.0);
+
+// ==========================================
 // SETUP PRINCIPAL
 // ==========================================
 void setup() {
@@ -78,13 +86,48 @@ void loop() {
 void Task_FlightLoop(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xFrequency = pdMS_TO_TICKS(4); // 250 Hz (4ms)
+    
+    // O delta tempo é fixo porque o FreeRTOS garante o determinismo (4ms = 0.004s)
+    const float dt = 0.004f; 
 
     for(;;) {
         // 1. Ler Sensores Rápidos (MPU6050 I2C Non-Blocking)
+        // (Exemplo: SensorManager::readIMU(imuData);)
+
         // 2. Rodar Filtro Complementar (AHRS Quaternions)
+        // (Exemplo: ahrs.update(imuData.gx...);)
+
+        // --- CÁLCULO DO TPA (Throttle PID Attenuation) ---
+        // Pega o valor atual do canal de aceleração recebido do rádio (1000 a 2000)
+        float current_throttle_pwm = 1500.0f; // Mockup: aqui você lerá a variável real do RC
+        
+        // Normaliza para 0.0 a 1.0 (0% a 100%)
+        float throttle_percent = (current_throttle_pwm - 1000.0f) / 1000.0f; 
+        
+        // Garante limites de segurança
+        throttle_percent = constrain(throttle_percent, 0.0f, 1.0f);
+
+        float tpa_factor = 1.0f;
+        
+        // Se acelerador > 50%, reduz o ganho linearmente (máximo de 30% de corte)
+        if (throttle_percent > 0.5f) {
+            tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
+        }
+
         // 3. Rodar PIDs de Atitude e Rate
+        // Aplicamos o tpa_factor nas malhas de Rate para evitar tremedeira em alta velocidade
+        // (desired_roll_rate e desired_pitch_rate viriam do PID da malha externa ou do controle)
+        float desired_roll_rate = 0.0f;  // Mockup
+        float desired_pitch_rate = 0.0f; // Mockup
+
+        float mixer_roll_cmd = rollRatePID.compute(desired_roll_rate, /*imuData.gx*/ 0.0f, dt, tpa_factor);
+        float mixer_pitch_cmd = pitchRatePID.compute(desired_pitch_rate, /*imuData.gy*/ 0.0f, dt, tpa_factor);
+
         // 4. Calcular Matriz de Elevons (Dual Clamp)
+        // (Exemplo: elevonMixer.compute(mixer_pitch_cmd, mixer_roll_cmd);)
+
         // 5. Enviar PWM pros Servos
+        // (Exemplo: servoLeft.writeMicroseconds(elevonMixer.servo_left_pwm);)
         
         // Aguarda exatamente o tempo restante para fechar 4ms (Determinismo)
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
