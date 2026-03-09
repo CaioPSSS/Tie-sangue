@@ -18,8 +18,10 @@
 #include "sensors/GPSManager.h"
 #include "sensors/BatteryManager.h"
 #include "hardware/OutputManager.h"
+#include "hardware/LEDManager.h"
 #include "common/SharedTypes.h"
 #include "comms/LoRaManager.h"
+
 
 // ==========================================
 // VARIÁVEIS GLOBAIS DE IPC (Inter-Process Comm)
@@ -56,6 +58,7 @@ void Task_Navigation(void *pvParameters);
 void Task_GPS_Parser(void *pvParameters);
 void Task_LoRa_Comm(void *pvParameters);
 void Task_System_Mon(void *pvParameters);
+void Task_Lights(void *pvParameters);
 
 // ==========================================
 // SETUP PRINCIPAL
@@ -89,6 +92,7 @@ void setup() {
     OutputManager::init();
     GPSManager::init();
     BatteryManager::init();
+    LEDManager::init();
 
     // --- INSTANCIAÇÃO DAS TAREFAS NO CORE 1 (Prioridade Máxima) ---
     xTaskCreatePinnedToCore(Task_FlightLoop, "FlightLoop", 8192, NULL, 5, NULL, 1);
@@ -98,6 +102,7 @@ void setup() {
     xTaskCreatePinnedToCore(Task_GPS_Parser, "GPSParser", 4096, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(Task_LoRa_Comm, "LoRaComm", 4096, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(Task_System_Mon, "SysMon", 2048, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(Task_Lights, "Lights", 2048, NULL, 1, NULL, 0);
 
     vTaskDelete(NULL); // Deleta o void loop() para libertar memória
 }
@@ -451,6 +456,41 @@ void Task_System_Mon(void *pvParameters) {
             xSemaphoreGive(stateMutex);
         }
 
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    }
+}
+
+// ==========================================
+// CORE 0: TAREFA DE LUZES NAV / STROBE (20Hz)
+// ==========================================
+void Task_Lights(void *pvParameters) {
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(50); // 20 Hz (A cada 50ms)
+
+    for(;;) {
+        // 1. Puxa os dados vitais em segurança (Snapshot)
+        float batt = 7.4f;
+        bool armed = false;
+        bool gps_ok = false;
+        bool rth_on = false;
+        
+        if (xSemaphoreTake(stateMutex, 0) == pdTRUE) {
+            batt = globalState.battery_voltage;
+            armed = globalState.is_armed;
+            gps_ok = globalState.gps_fix;
+            rth_on = (globalState.current_mode == MODE_RTH);
+            xSemaphoreGive(stateMutex);
+        }
+
+        // Lógica para descobrir se o Home está travado sem violar o MissionManager
+        // Se quisermos ser rigorosos, passamos o bool do Task_Navigation para o globalState.
+        // Por agora, usamos a lógica: armado + com gps = travou o home
+        bool is_home_locked = (armed && gps_ok); 
+
+        // 2. Entrega para a máquina de estados dos LEDs
+        LEDManager::update(batt, armed, gps_ok, rth_on, is_home_locked);
+
+        // 3. Aguarda
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
