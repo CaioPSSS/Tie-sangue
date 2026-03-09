@@ -52,6 +52,17 @@ void Task_LoRa_Comm(void *pvParameters);
 void Task_System_Mon(void *pvParameters);
 
 // ==========================================
+// FUNÇÃO GEODÉSICA: PRESSÃO -> ALTITUDE
+// ==========================================
+float computeAltitude(float pressure_pa, float sea_level_pa = 101325.0f) {
+    // Se a pressão for inválida (sensor desconectado), evita cálculo bizarro
+    if (pressure_pa <= 0) return 0.0f; 
+    
+    // Fórmula Barométrica Internacional
+    return 44330.0f * (1.0f - pow(pressure_pa / sea_level_pa, 0.190295f));
+}
+
+// ==========================================
 // SETUP PRINCIPAL
 // ==========================================
 void setup() {
@@ -173,58 +184,85 @@ void Task_FlightLoop(void *pvParameters) {
 // ==========================================
 void Task_Navigation(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(20); 
+    const TickType_t xFrequency = pdMS_TO_TICKS(20); // 50 Hz
     const float dt = 0.02f;
 
     for(;;) {
-        // 1. Ler Barômetro e converter pressão para altitude
-        // float baro_pressure, baro_temp;
-        // SensorManager::readBaro(baro_pressure, baro_temp);
-        float baro_alt = 0.0f; // TODO: Implementar fórmula barométrica
-
-        // 2. Variáveis de Estado Local
+        // 1. Variáveis de Estado Local (Cópia segura do Core 1 e do GPS)
         float current_earth_z_accel = 0.0f;
-        float current_ground_speed = 15.0f; // Mockup (15 m/s)
-        float current_lat = 0.0f, current_lon = 0.0f;
+        float current_ground_speed = 0.0f; 
+        float current_lat = 0.0f;
+        float current_lon = 0.0f;
         float current_course = 0.0f;
+        bool  has_gps_fix = false;
 
-        // Buscar estado seguro gerado pelo Core 1 / GPS
+        // Busca os dados mais recentes gerados pelas outras Tasks (Protegido por Mutex)
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
             current_earth_z_accel = globalState.earth_z_accel;
             current_ground_speed = globalState.ground_speed_ms;
-            // current_lat = globalState.lat ...
+            
+            // O Segredo aqui: Converte os inteiros do LoRa de volta para decimais puros para a Matemática!
+            current_lat = globalState.lat / 10000000.0f;
+            current_lon = globalState.lon / 10000000.0f;
+            current_course = globalState.gps_course_deg;
+            has_gps_fix = globalState.gps_fix;
+            
             xSemaphoreGive(stateMutex);
         }
 
-        // 3. FUSÃO VERTICAL (Baro + AccelZ)
-        verticalFilter.update(baro_alt, current_earth_z_accel, dt);
+        // 2. LER SENSORES LENTOS EM SEGURANÇA (Barômetro)
+        float baro_pressure, baro_temp;
+        
+        // 3. FUSÃO VERTICAL (Variômetro / Kalman 1D)
+        // Lemos o barômetro E aplicamos os Sanity Checks construídos no SensorManager
+        if (SensorManager::readBaro(baro_pressure, baro_temp)) {
+            // Leitura perfeita. Converte a pressão limpa em metros
+            float baro_alt = computeAltitude(baro_pressure);
+            
+            // Atualiza o filtro com a pressão do Core 0 e a aceleração G limpa do Core 1
+            verticalFilter.update(baro_alt, current_earth_z_accel, dt);
+        } else {
+            // Failsafe de Hardware: O Barômetro falhou, desconectou ou entregou lixo
+            // Passamos a própria estimativa antiga de volta para ele, 
+            // forçando-o a confiar APENAS na integração inercial deste ciclo (Acelerômetro Z).
+            verticalFilter.update(verticalFilter.estimated_altitude_m, current_earth_z_accel, dt);
+        }
 
         // 4. ALVOS DE NAVEGAÇÃO (Waypoints)
-        // TODO: Estas variáveis virão da Máquina de Estados de Missão
+        // TODO: Na Fase 2 (FSM), estas variáveis virão da Missão ou do Failsafe (RTH)
         float target_altitude = 50.0f; 
         float target_speed = 15.0f;
-        float wp_prev_lat = 0.0f, wp_prev_lon = 0.0f;
-        float wp_next_lat = 0.01f, wp_next_lon = 0.01f;
+        float wp_prev_lat = -12.970000f, wp_prev_lon = -38.500000f; // Mockup
+        float wp_next_lat = -12.971400f, wp_next_lon = -38.501400f; // Mockup
 
-        // 5. PROCESSAMENTO L1 E TECS
-        l1Guidance.compute(current_lat, current_lon, current_ground_speed, current_course, 
-                           wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon);
+        // 5. PROCESSAMENTO L1 E TECS (Inteligência de Voo)
+        // Só executa a curva do L1 Guidance se tivermos GPS válido (evita guinadas caóticas se perder sinal)
+        if (has_gps_fix) {
+            l1Guidance.compute(current_lat, current_lon, current_ground_speed, current_course, 
+                               wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon);
+        } else {
+            // Se perder o GPS no ar, zera a inclinação e nivela a asa
+            l1Guidance.roll_cmd_deg = 0.0f; 
+        }
 
         tecs.compute(target_altitude, verticalFilter.estimated_altitude_m, 
                      verticalFilter.vertical_speed_ms, 
                      target_speed, current_ground_speed, dt);
 
-        // 6. ENVIAR COMANDOS GERADOS PARA O CORE 1
+        // 6. ENVIAR COMANDOS GERADOS PARA O CORE 1 E TELEMETRIA
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
             globalState.desired_roll_cmd = l1Guidance.roll_cmd_deg;
             globalState.desired_pitch_cmd = tecs.pitch_cmd_deg;
             globalState.desired_throttle = tecs.throttle_cmd_percent;
             
-            // Salva altitude filtrada para a Telemetria (LoRa)
+            // Salva as altitudes limpas para o LoRa transmitir para o seu Notebook
             globalState.altitude_m = verticalFilter.estimated_altitude_m; 
+            globalState.vertical_speed_ms = verticalFilter.vertical_speed_ms;
+            
             xSemaphoreGive(stateMutex);
         }
 
+        // Aguarda cravado para o RTOS manter a taxa de atualização de 50Hz exatos
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
