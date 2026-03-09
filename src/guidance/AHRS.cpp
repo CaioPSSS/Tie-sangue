@@ -3,11 +3,15 @@
 
 AHRS::AHRS() {}
 
-void AHRS::update(float gx, float gy, float gz, float ax, float ay, float az, float dt) {
+void AHRS::update(float gx, float gy, float gz, float ax, float ay, float az, float dt, float cog_error_deg) {
     float recipNorm;
     float halfvx, halfvy, halfvz;
     float halfex, halfey, halfez;
     float qa, qb, qc;
+
+    // [CORREÇÃO SPRINT 1]: Funde o Erro do GPS na malha do Giroscópio Z
+    // K_yaw_gps = 0.1f (Fator de confiança suave no GPS)
+    gz += (cog_error_deg * 0.1f);
 
     // Converte giroscópio de graus/s para radianos/s
     gx *= (PI / 180.0f);

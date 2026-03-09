@@ -16,17 +16,16 @@ public:
     L1Guidance();
 
     // Executa a malha de navegação a 50Hz (Core 0)
-    // Coordenadas devem estar em formato decimal (Lat/Lon)
-    void compute(float current_lat, float current_lon, float ground_speed, float current_course,
-                 float wp_prev_lat, float wp_prev_lon, float wp_next_lat, float wp_next_lon);
+// Coordenadas agora em Double (64 bits) para evitar truncamento sub-métrico
+    void compute(double current_lat, double current_lon, float ground_speed, float current_course,
+                 double wp_prev_lat, double wp_prev_lon, double wp_next_lat, double wp_next_lon);
 
 private:
     const float GRAVITY = 9.81f;
-    const float EARTH_RADIUS = 6371000.0f; // Metros
+    const double EARTH_RADIUS = 6371000.0; // Double
 
-    // Funções auxiliares de geodésia (Fórmula de Haversine)
-    float getDistance(float lat1, float lon1, float lat2, float lon2);
-    float getBearing(float lat1, float lon1, float lat2, float lon2);
+    double getDistance(double lat1, double lon1, double lat2, double lon2);
+    double getBearing(double lat1, double lon1, double lat2, double lon2);
 };
 
 #endif

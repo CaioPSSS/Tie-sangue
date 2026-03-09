@@ -130,20 +130,21 @@ void Task_FlightLoop(void *pvParameters) {
 
         esp_task_wdt_reset(); // Reseta o WDT a cada ciclo para evitar resets indesejados
         
-        // 1. Ler Sensores (MPU6050)
+        // 1. Ler Sensores Rápidos (MPU6050)
         RawIMU imuData;
         SensorManager::readIMU(imuData);
 
-        // 2. Atualizar AHRS (Filtro Mahony)
-        ahrs.update(imuData.gx, imuData.gy, imuData.gz, imuData.ax, imuData.ay, imuData.az, dt);
-
         // ========================================================
-        // 3. BUSCAR COMANDOS DO CORE 0 (Rádio Humano + Navegação Auto)
+        // 2. BUSCAR COMANDOS DO CORE 0 (Rádio Humano + Navegação)
         // ========================================================
         float rc_roll = 0.0f, rc_pitch = 0.0f, rc_throttle = 1000.0f;
         float nav_roll = 0.0f, nav_pitch = 0.0f, nav_throttle = 0.0f;
         uint8_t current_mode = MODE_MANUAL;
         bool is_armed = false;
+        
+        // Variáveis de isolamento de Mutex para segurança de memória
+        float ground_speed_local = 0.0f;
+        float cog_error_local = 0.0f;
         
         // Timeout 0: Se o Core 0 estiver ocupado, não trava o Core 1. Usa os valores do ciclo passado.
         if (xSemaphoreTake(stateMutex, 0) == pdTRUE) { 
@@ -156,13 +157,25 @@ void Task_FlightLoop(void *pvParameters) {
             nav_roll = globalState.desired_roll_cmd;
             nav_pitch = globalState.desired_pitch_cmd;
             nav_throttle = globalState.desired_throttle;
+
+            // Extrai as variáveis críticas de forma segura (sem Fuga de Mutex)
+            ground_speed_local = globalState.ground_speed_ms;
+            cog_error_local = globalState.cog_error;
             
             // Grava os dados limpos da IMU para o Core 0 usar
             globalState.roll_deg = ahrs.roll;
             globalState.pitch_deg = ahrs.pitch;
+            globalState.yaw_deg = ahrs.yaw; // Essencial para o cálculo de desvio no Core 0
             globalState.earth_z_accel = ahrs.earth_z_accel;
+            
             xSemaphoreGive(stateMutex);
         }
+
+        // ========================================================
+        // 3. FUSÃO SENSORIAL (AHRS)
+        // ========================================================
+        // O AHRS é atualizado *agora*, recebendo a injeção do cog_error_local para anular o drift
+        ahrs.update(imuData.gx, imuData.gy, imuData.gz, imuData.ax, imuData.ay, imuData.az, dt, cog_error_local);
 
         // ========================================================
         // 4. MÁQUINA DE ESTADOS (O Cérebro da Asa)
@@ -182,24 +195,25 @@ void Task_FlightLoop(void *pvParameters) {
             mixer_roll_cmd = fsm.final_roll_target;
             mixer_pitch_cmd = fsm.final_pitch_target;
         } else {
-            // Cálculo dinâmico do TPA 
+            // Cálculo dinâmico do TPA de forma totalmente Thread-Safe
             float tpa_factor = 1.0f;
+            
             if (current_mode == MODE_AUTO || current_mode == MODE_RTH || current_mode == MODE_HOLD) {
-                // TPA baseado na Cinética (GPS Speed) para os modos autónomos
-                // Exemplo: Atenuação linear a partir de 15 m/s, limitando o corte a 40%
-                if (globalState.ground_speed_ms > 15.0f) {
-                    tpa_factor = 1.0f - ((globalState.ground_speed_ms - 15.0f) * 0.03f);
+                // TPA baseado na Cinética Real (GPS Speed Local) para modos autónomos
+                if (ground_speed_local > 15.0f) {
+                    tpa_factor = 1.0f - ((ground_speed_local - 15.0f) * 0.03f);
                 }
             } else {
-                // TPA Clássico baseado no acelerador humano para modos Acro/Angle
+                // TPA Clássico baseado no acelerador para modos manuais
                 float throttle_percent = constrain((fsm.final_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
                 if (throttle_percent > 0.5f) {
                     tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
                 }
-        }
-        
-        // Garante que o ganho nunca fica perigosamente baixo ou invertido
-        tpa_factor = constrain(tpa_factor, 0.4f, 1.0f);
+            }
+            
+            // Saturação de proteção do TPA
+            tpa_factor = constrain(tpa_factor, 0.4f, 1.0f);
+
             // Cascata PID (Angle -> Rate)
             float desired_roll_rate = rollAnglePID.compute(fsm.final_roll_target, ahrs.roll, dt, 1.0f);
             float desired_pitch_rate = pitchAnglePID.compute(fsm.final_pitch_target, ahrs.pitch, dt, 1.0f);
@@ -208,52 +222,68 @@ void Task_FlightLoop(void *pvParameters) {
             mixer_pitch_cmd = pitchRatePID.compute(desired_pitch_rate, imuData.gy, dt, tpa_factor);
         }
 
-        // Matriz de Elevons e Saída Física
+        // ========================================================
+        // 6. MATRIZ DE ELEVONS E SAÍDA DE POTÊNCIA
+        // ========================================================
         elevonMixer.compute(mixer_pitch_cmd, mixer_roll_cmd);
         OutputManager::writeServos(elevonMixer.servo_left_pwm, elevonMixer.servo_right_pwm);
         OutputManager::writeMotor(fsm.final_throttle_pwm, is_armed);
         
+        // Cede processamento mantendo o loop em rigorosos 250Hz
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
 // ==========================================
-// CORE 1: MALHA DE NAVEGAÇÃO (50Hz) - INTELIGÊNCIA
+// CORE 0: MALHA DE NAVEGAÇÃO (50Hz)
 // ==========================================
 void Task_Navigation(void *pvParameters) {
-
+    esp_task_wdt_add(NULL); // [CORREÇÃO] Adiciona a Task de Navegação ao WDT!
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(4); 
+    const TickType_t xFrequency = pdMS_TO_TICKS(20); 
     
-    uint32_t last_time_us = micros(); // Inicializa o relógio
+    uint32_t last_time_us = micros(); 
 
     for(;;) {
+        esp_task_wdt_reset(); // [CORREÇÃO] Reseta o WDT a cada ciclo
+
         uint32_t now_us = micros();
-        float dt = (now_us - last_time_us) / 1000000.0f; // Cálculo dinâmico cravado
+        float dt = (now_us - last_time_us) / 1000000.0f; 
         last_time_us = now_us;
         
-        // Proteção extra: se o dt explodir por um travamento, limita a 10ms
-        if (dt > 0.010f) dt = 0.004f;
+        // Proteção extra: a navegação corre a 50Hz (20ms). Limita a 50ms máximo se houver atraso.
+        if (dt > 0.050f) dt = 0.020f;
 
         // 1. Variáveis de Estado Local
         float current_earth_z_accel = 0.0f;
         float current_ground_speed = 0.0f; 
-        float current_lat = 0.0f;
-        float current_lon = 0.0f;
+        
+        // [CORREÇÃO SPRINT 1] DOUBLE (64-bits) para evitar truncamento submétrico de GPS!
+        double current_lat = 0.0;
+        double current_lon = 0.0;
+        
         float current_course = 0.0f;
+        float ahrs_yaw = 0.0f; // [CORREÇÃO SPRINT 1] Variável para ler o Yaw do Core 1 em segurança
+        
         bool  has_gps_fix = false;
         bool  is_armed_now = false;
         uint8_t current_mode_now = MODE_MANUAL;
         uint32_t last_rc_packet = 0;
+        bool has_first_packet = false; // [CORREÇÃO SPRINT 2]
 
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
             current_earth_z_accel = globalState.earth_z_accel;
             current_ground_speed = globalState.ground_speed_ms;
             
-            // Re-conversão para decimais puros
-            current_lat = globalState.lat / 10000000.0f;
-            current_lon = globalState.lon / 10000000.0f;
+            // Re-conversão para decimais puros com cast explícito para double
+            current_lat = (double)globalState.lat / 10000000.0;
+            current_lon = (double)globalState.lon / 10000000.0;
             current_course = globalState.gps_course_deg;
+            
+            // Lendo as novas variáveis
+            ahrs_yaw = globalState.yaw_deg; 
+            has_first_packet = globalState.has_received_first_packet;
+            
             has_gps_fix = globalState.gps_fix;
             is_armed_now = globalState.is_armed;
             current_mode_now = globalState.current_mode;
@@ -274,7 +304,6 @@ void Task_Navigation(void *pvParameters) {
         // 3. LOCK DO HOME POINT
         static bool home_locked = false;
         if (!home_locked && has_gps_fix && is_armed_now) {
-            // Protege a escrita na missão
             if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
                 missionManager.setHome(current_lat, current_lon, verticalFilter.estimated_altitude_m);
                 xSemaphoreGive(stateMutex);
@@ -284,12 +313,13 @@ void Task_Navigation(void *pvParameters) {
         }
 
         // 4. ATUALIZA A MÁQUINA DE MISSÃO E EXTRAI ALVOS
-        bool is_failsafe_active = (millis() - last_rc_packet) > 1500;
+        // [CORREÇÃO SPRINT 2] Failsafe Fantasma resolvido: Só dispara se já tiver apanhado sinal alguma vez
+        bool is_failsafe_active = has_first_packet && ((millis() - last_rc_packet) > 1500);
         bool force_rth = (current_mode_now == MODE_RTH) || is_failsafe_active;
 
-        float wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon, target_alt, target_speed;
+        double wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon; // DOUBLE!
+        float target_alt, target_speed;
 
-        // Protege o acesso às arrays do MissionManager
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
             missionManager.update(current_lat, current_lon, verticalFilter.estimated_altitude_m, force_rth);
             
@@ -303,35 +333,27 @@ void Task_Navigation(void *pvParameters) {
         }
 
         // 5. PROCESSAMENTO L1 E TECS
-
-        // Correção de COG (Course Over Ground) para o AHRS Yaw para reduzir o drift durante a navegação
+        
+        // [CORREÇÃO SPRINT 1] Cálculo do COG Error (Mas SEM aceder diretamente ao objeto AHRS!)
+        float cog_error_calc = 0.0f;
         if (has_gps_fix && current_ground_speed > 3.0f) {
-            float cog_error = current_course - ahrs.yaw;
-            // Normaliza o erro para -180 a 180
-            while (cog_error > 180.0f) cog_error -= 360.0f;
-            while (cog_error < -180.0f) cog_error += 360.0f;
-            
-            // Corrige lentamente o drift na própria variável da IMU
-            ahrs.yaw += cog_error * 0.05f * dt; 
+            cog_error_calc = current_course - ahrs_yaw;
+            while (cog_error_calc > 180.0f) cog_error_calc -= 360.0f;
+            while (cog_error_calc < -180.0f) cog_error_calc += 360.0f;
         }
 
         if (has_gps_fix) {
             l1Guidance.compute(current_lat, current_lon, current_ground_speed, current_course, 
                                wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon);
         } else {
-            l1Guidance.roll_cmd_deg = 0.0f; // Sem GPS, mantém a asa nivelada lateralmente
+            l1Guidance.roll_cmd_deg = 0.0f;
         }
 
-        // Diferença angular entre para onde o nariz aponta e para onde o VANT realmente vai
-        float wind_correction_angle = (current_course - ahrs.yaw) * (PI / 180.0f);
-        
-        // Estimativa de Airspeed: V = V_ground * cos(Angulo de Deriva)
+        // Vento Sintético 
+        float wind_correction_angle = (current_course - ahrs_yaw) * (PI / 180.0f);
         float synthetic_airspeed = current_ground_speed * cos(wind_correction_angle);
-        
-        // Proteção contra ventos extremos de cauda (Tailwind)
         if (synthetic_airspeed < 5.0f) synthetic_airspeed = 5.0f; 
 
-        // O TECS agora baseia as necessidades cinéticas no ar real passando pela asa
         tecs.compute(target_alt, verticalFilter.estimated_altitude_m, 
                      verticalFilter.vertical_speed_ms, 
                      target_speed, synthetic_airspeed, dt);
@@ -344,6 +366,9 @@ void Task_Navigation(void *pvParameters) {
             
             globalState.altitude_m = verticalFilter.estimated_altitude_m; 
             globalState.vertical_speed_ms = verticalFilter.vertical_speed_ms;
+            
+            // [CORREÇÃO SPRINT 1] Envia o erro pro Core 1 processar suavemente na IMU
+            globalState.cog_error = cog_error_calc; 
             
             xSemaphoreGive(stateMutex);
         }

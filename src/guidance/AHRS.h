@@ -17,7 +17,7 @@ public:
 
     // Atualiza a matemática. Deve ser chamado no Core 1 a ~250Hz.
     // gx, gy, gz em graus/s | ax, ay, az em Gs | dt em segundos
-    void update(float gx, float gy, float gz, float ax, float ay, float az, float dt);
+    void update(float gx, float gy, float gz, float ax, float ay, float az, float dt, float cog_error_deg = 0.0f);
 
 private:
     // Estado do Quatérnio (Inicializado apontando para frente e nivelado)

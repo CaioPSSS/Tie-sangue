@@ -5,10 +5,11 @@
 
 // Estrutura de um Waypoint (Marcador Cartográfico Tridimensional)
 struct Waypoint {
-    float lat;
-    float lon;
+    double lat;     // 64-bit
+    double lon;     // 64-bit
     float altitude_m;
     float speed_ms;
+    bool is_valid;
 };
 
 // Estados Comportamentais do RTH (Conforme documentação do projeto)

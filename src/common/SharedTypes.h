@@ -28,12 +28,14 @@ struct FlightState {
     float roll_deg;
     float pitch_deg;
     float yaw_rate_dps;
+    float yaw_deg;
     float earth_z_accel;        // Aceleração inercial para o Variômetro (Filtro Vertical)
     
     // --- DADOS DO CORE 0 PARA O CORE 1 (Navegação/Autonomia) ---
     float desired_roll_cmd;     // Comando gerado pelo L1 Guidance
     float desired_pitch_cmd;    // Comando gerado pelo TECS
     float desired_throttle;     // Comando gerado pelo TECS (0.0 a 1.0)
+    float cog_error;          // Variável crítica para o L1 Guidance corrigir a proa em relação à linha de rumo
     
     // --- DADOS DO NAVEGADOR (Core 0/0) ---
     float altitude_m;           // Fundido pelo VerticalFilter
@@ -50,6 +52,7 @@ struct FlightState {
     uint8_t current_mode;
     bool is_armed;
     uint32_t last_rc_packet_ms; // CRÍTICO PARA O FAILSAFE!
+    bool has_received_first_packet; // Para evitar o Failsafe antes do primeiro contato com a base
     
     // --- DADOS DE SISTEMA ---
     float battery_voltage;

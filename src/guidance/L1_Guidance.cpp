@@ -5,8 +5,8 @@ L1Guidance::L1Guidance() {
     roll_cmd_deg = 0.0f;
 }
 
-void L1Guidance::compute(float current_lat, float current_lon, float ground_speed, float current_course,
-                         float wp_prev_lat, float wp_prev_lon, float wp_next_lat, float wp_next_lon) {
+void L1Guidance::compute(double current_lat, double current_lon, float ground_speed, float current_course,
+                         double wp_prev_lat, double wp_prev_lon, double wp_next_lat, double wp_next_lon) {
     
     // 1. Proteção: Se a velocidade for muito baixa (ex: no chão ou contra vento extremo), 
     // evitamos divisões por zero e mantemos a asa nivelada.
@@ -62,24 +62,24 @@ void L1Guidance::compute(float current_lat, float current_lon, float ground_spee
 // ---------------------------------------------------------
 // Funções Geodésicas Auxiliares (Usando Radianos)
 // ---------------------------------------------------------
-float L1Guidance::getDistance(float lat1, float lon1, float lat2, float lon2) {
-    float dLat = (lat2 - lat1) * (PI / 180.0f);
-    float dLon = (lon2 - lon1) * (PI / 180.0f);
-    lat1 = lat1 * (PI / 180.0f);
-    lat2 = lat2 * (PI / 180.0f);
+double L1Guidance::getDistance(double lat1, double lon1, double lat2, double lon2) {
+    double dLat = (lat2 - lat1) * (M_PI / 180.0);
+    double dLon = (lon2 - lon1) * (M_PI / 180.0);
+    lat1 = lat1 * (M_PI / 180.0);
+    lat2 = lat2 * (M_PI / 180.0);
 
-    float a = sin(dLat / 2.0f) * sin(dLat / 2.0f) +
-              sin(dLon / 2.0f) * sin(dLon / 2.0f) * cos(lat1) * cos(lat2);
-    float c = 2.0f * atan2(sqrt(a), sqrt(1.0f - a));
+    double a = sin(dLat / 2.0) * sin(dLat / 2.0) +
+               sin(dLon / 2.0) * sin(dLon / 2.0) * cos(lat1) * cos(lat2);
+    double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
     return EARTH_RADIUS * c;
 }
 
-float L1Guidance::getBearing(float lat1, float lon1, float lat2, float lon2) {
-    lat1 = lat1 * (PI / 180.0f);
-    lat2 = lat2 * (PI / 180.0f);
-    float dLon = (lon2 - lon1) * (PI / 180.0f);
+double L1Guidance::getBearing(double lat1, double lon1, double lat2, double lon2) {
+    lat1 = lat1 * (M_PI / 180.0);
+    lat2 = lat2 * (M_PI / 180.0);
+    double dLon = (lon2 - lon1) * (M_PI / 180.0);
 
-    float y = sin(dLon) * cos(lat2);
-    float x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
-    return atan2(y, x); // Retorna em radianos
+    double y = sin(dLon) * cos(lat2);
+    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
+    return atan2(y, x); 
 }

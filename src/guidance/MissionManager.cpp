@@ -5,10 +5,30 @@ MissionManager::MissionManager() {
     total_waypoints = 0;
     current_wp_index = 0;
     rth_state = RTH_IDLE;
-    has_valid_home = false; // Começa sempre como falso por segurança
+    has_valid_home = false; 
     
-    home_wp = {0.0f, 0.0f, 0.0f, cruise_speed};
-    loadMission();
+    home_wp = {0.0, 0.0, 0.0f, cruise_speed, false};
+    
+    // [CORREÇÃO SPRINT 2]: Limpa a RAM para evitar lixo
+    for(int i=0; i<MAX_WAYPOINTS; i++) {
+        mission[i].is_valid = false;
+    }
+}
+
+void MissionManager::saveWaypoint(uint8_t index, float lat, float lon, float alt, float speed) {
+    if (index < MAX_WAYPOINTS) {
+        mission[index].lat = lat;
+        mission[index].lon = lon;
+        mission[index].altitude_m = alt;
+        mission[index].speed_ms = speed;
+        mission[index].is_valid = true;
+
+        if (index >= total_waypoints) {
+            total_waypoints = index + 1;
+        }
+        Serial.printf("WP %d Gravado na RAM! Lat: %.6f, Lon: %.6f\n", index, lat, lon);
+
+    }
 }
 
 void MissionManager::setHome(float lat, float lon, float alt) {
@@ -23,20 +43,6 @@ void MissionManager::loadMission() {
     // Inicialização vazia (Os Waypoints chegam agora via LoRa!)
     total_waypoints = 0;
     current_wp_index = 0;
-}
-
-void MissionManager::saveWaypoint(uint8_t index, float lat, float lon, float alt, float speed) {
-    if (index < MAX_WAYPOINTS) {
-        mission[index].lat = lat;
-        mission[index].lon = lon;
-        mission[index].altitude_m = alt;
-        mission[index].speed_ms = speed;
-
-        if (index >= total_waypoints) {
-            total_waypoints = index + 1;
-        }
-        Serial.printf("WP %d Gravado na RAM! Lat: %.6f, Lon: %.6f\n", index, lat, lon);
-    }
 }
 
 void MissionManager::update(float current_lat, float current_lon, float current_alt, bool is_rth_active) {
@@ -57,13 +63,11 @@ void MissionManager::update(float current_lat, float current_lon, float current_
 
         switch (rth_state) {
             case RTH_CLIMB:
-                if (current_alt >= nav_rth_altitude - 2.0f) {
-                    // BLINDAGEM CONTRA O NULL ISLAND BUG
+                // Sobe para (Altitude do Chão + 80 metros), garantindo segurança!
+                if (current_alt >= (home_wp.altitude_m + nav_rth_altitude) - 2.0f) {
                     if (has_valid_home) {
-                        Serial.println("Altitude RTH atingida. Virando para Casa.");
                         rth_state = RTH_RETURN;
                     } else {
-                        Serial.println("ALERTA CRITICO: Sem Home Point! Iniciando descida em espiral no local (Loiter Down).");
                         rth_state = RTH_LOITER_DOWN;
                     }
                 }
