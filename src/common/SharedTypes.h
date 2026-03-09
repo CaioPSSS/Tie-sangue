@@ -21,25 +21,29 @@ typedef struct __attribute__((packed)) {
 
 // --------------------------------------------------------
 // 2. ESTADO GLOBAL DA AERONAVE (IPC)
-// Esta estrutura transita entre os núcleos. 
+// Esta estrutura transita entre os núcleos usando Mutex.
 // --------------------------------------------------------
 struct FlightState {
-    // Atitude (Core 1)
+    // --- DADOS DO CORE 1 PARA O CORE 0 ---
     float roll_deg;
     float pitch_deg;
     float yaw_rate_dps;
+    float earth_z_accel;        // Aceleração inercial para o Variômetro (Filtro Vertical)
     
-    // Cinemática Vertical (Filtro Kalman 1D - Core 1/0)
-    float altitude_m;
-    float vertical_speed_ms;
+    // --- DADOS DO CORE 0 PARA O CORE 1 (Navegação/Autonomia) ---
+    float desired_roll_cmd;     // Comando gerado pelo L1 Guidance
+    float desired_pitch_cmd;    // Comando gerado pelo TECS
+    float desired_throttle;     // Comando gerado pelo TECS (0.0 a 1.0)
     
-    // Navegação e GPS (Core 0)
-    int32_t lat, lon;
+    // --- DADOS DO NAVEGADOR (Core 0/0) ---
+    float altitude_m;           // Fundido pelo VerticalFilter
+    float vertical_speed_ms;    // Fundido pelo VerticalFilter
+    int32_t lat, lon;           // Coordenadas puras do GPS
     float ground_speed_ms;
-    float gps_course_deg; // O famoso COG
+    float gps_course_deg;       // COG (Course over ground)
     bool gps_fix;
     
-    // Sensores
+    // --- DADOS DE SISTEMA ---
     float battery_voltage;
 };
 
