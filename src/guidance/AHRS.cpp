@@ -1,7 +1,7 @@
 #include "AHRS.h"
 #include <math.h>
 
-AHRS::AHRS() {}
+AHRS::AHRS() : roll(0.0f), pitch(0.0f), yaw(0.0f), earth_z_accel(0.0f) {}
 
 void AHRS::update(float gx, float gy, float gz, float ax, float ay, float az, float dt, float cog_error_deg) {
     float recipNorm;

@@ -319,7 +319,7 @@ void Task_Navigation(void *pvParameters) {
         bool force_rth = (current_mode_now == MODE_RTH) || is_failsafe_active;
 
         double wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon; // DOUBLE!
-        float target_alt, target_speed;
+        float target_alt = 0.0f, target_speed = 0.0f;
 
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
             missionManager.update(current_lat, current_lon, verticalFilter.estimated_altitude_m, force_rth);

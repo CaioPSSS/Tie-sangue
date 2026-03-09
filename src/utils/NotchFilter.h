@@ -5,7 +5,7 @@
 
 class NotchFilter {
 public:
-    NotchFilter() {}
+    NotchFilter() : b0(0.0f), b1(0.0f), b2(0.0f), a1(0.0f), a2(0.0f), x1(0.0f), x2(0.0f), y1(0.0f), y2(0.0f) {}
 
     // center_freq: Frequência do ruído do motor (ex: 150 Hz)
     // bandwidth: Largura do corte (ex: 50 Hz)

@@ -8,6 +8,7 @@ MissionManager::MissionManager() {
     has_valid_home = false; 
     
     home_wp = {0.0, 0.0, 0.0f, cruise_speed, false};
+    rth_climb_point = {0.0, 0.0, 0.0f, cruise_speed, false};
     
     // [CORREÇÃO SPRINT 2]: Limpa a RAM para evitar lixo
     for(int i=0; i<MAX_WAYPOINTS; i++) {
