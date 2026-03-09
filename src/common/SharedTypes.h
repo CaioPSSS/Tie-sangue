@@ -78,4 +78,17 @@ typedef struct __attribute__((packed)) {
     uint8_t checksum_crc8;  // Validador
 } PacketUplinkLoRa_t;
 
+// --------------------------------------------------------
+// 4. ESTRUTURA DE UPLOAD DE MISSÃO LORA (BASE -> DRONE)
+// --------------------------------------------------------
+typedef struct __attribute__((packed)) {
+    uint8_t  sync_header;   // Identificador EXCLUSIVO: 0xCC
+    uint8_t  wp_index;      // Qual posição na RAM (0 a 19)
+    int32_t  lat_e7;        // Latitude * 10^7
+    int32_t  lon_e7;        // Longitude * 10^7
+    int16_t  alt_m;         // Altitude em metros
+    uint8_t  speed_ms;      // Velocidade alvo em m/s
+    uint8_t  checksum_crc8; 
+} PacketWaypointLoRa_t;
+
 #endif

@@ -12,6 +12,7 @@
 #include "guidance/VerticalFilter.h"
 #include "guidance/L1_Guidance.h"
 #include "guidance/TECS.h"
+#include "guidance/MissionManager.h"
 #include "sensors/SensorManager.h"
 #include "sensors/GPSManager.h"
 #include "sensors/BatteryManager.h"
@@ -43,9 +44,8 @@ ElevonMixer elevonMixer;
 VerticalFilter verticalFilter;
 L1Guidance l1Guidance;
 TECS tecs;
-
-// Máquina de Estados de Voo (FSM)
 FlightModeManager fsm;
+MissionManager missionManager;
 
 // ==========================================
 // DECLARAÇÃO DAS TAREFAS
@@ -254,24 +254,61 @@ void Task_Navigation(void *pvParameters) {
             verticalFilter.update(verticalFilter.estimated_altitude_m, current_earth_z_accel, dt);
         }
 
-        // 4. ALVOS DE NAVEGAÇÃO (Waypoints)
-        // TODO: Na Fase 2 (FSM), estas variáveis virão da Missão ou do Failsafe (RTH)
-        float target_altitude = 50.0f; 
-        float target_speed = 15.0f;
-        float wp_prev_lat = -12.970000f, wp_prev_lon = -38.500000f; // Mockup
-        float wp_next_lat = -12.971400f, wp_next_lon = -38.501400f; // Mockup
 
-        // 5. PROCESSAMENTO L1 E TECS (Inteligência de Voo)
-        // Só executa a curva do L1 Guidance se tivermos GPS válido (evita guinadas caóticas se perder sinal)
+        // 3.1 LOCK DO HOME (Ponto de Retorno)
+        static bool home_locked = false;
+        
+        // Variável local para saber se os motores foram armados
+        bool is_armed_now = false; 
+        if(xSemaphoreTake(stateMutex, 0) == pdTRUE) {
+            is_armed_now = globalState.is_armed;
+            xSemaphoreGive(stateMutex);
+        }
+
+        // Condições vitais para travar o Ponto de Retorno:
+        // 1. O Home ainda não foi gravado neste voo.
+        // 2. O GPS tem sinal tridimensional validado.
+        // 3. O piloto bateu a chave "Armar" no rádio LoRa (Decolagem iminente).
+        if (!home_locked && has_gps_fix && is_armed_now) {
+            
+            // Grava a coordenada exata e a altitude local atual como Ponto Zero
+            missionManager.setHome(current_lat, current_lon, verticalFilter.estimated_altitude_m);
+            home_locked = true;
+            
+            Serial.println(">>> HOME POINT TRAVADO COM SUCESSO! <<<");
+            
+            // Dica de Hardware: Se você tiver um Buzzer no pino do ESP32, 
+            // este é o momento de mandar fazer "BEEP BEEP BEEP" longo para 
+            // avisar o piloto de que é seguro jogar a asa no ar!
+        }
+
+        // 4. ALVOS DE NAVEGAÇÃO (Waypoints)
+        // Verifica o Deadman Switch (Failsafe)
+        bool is_failsafe_active = (millis() - globalState.last_rc_packet_ms) > 1500;
+        
+        // Se a chave no PC pedir RTH ou o sinal de rádio cair, aciona a emergência
+        bool force_rth = (globalState.current_mode == MODE_RTH) || is_failsafe_active;
+
+        // 4. ATUALIZA A MÁQUINA DE MISSÃO / RTH
+        missionManager.update(current_lat, current_lon, verticalFilter.estimated_altitude_m, force_rth);
+
+        // Extrai os Alvos Dinâmicos do Gestor
+        float wp_prev_lat   = missionManager.getPrevLat();
+        float wp_prev_lon   = missionManager.getPrevLon();
+        float wp_next_lat   = missionManager.getActiveLat();
+        float wp_next_lon   = missionManager.getActiveLon();
+        float target_alt    = missionManager.getActiveAltitude();
+        float target_speed  = missionManager.getActiveSpeed();
+
+        // 5. PROCESSAMENTO L1 E TECS
         if (has_gps_fix) {
             l1Guidance.compute(current_lat, current_lon, current_ground_speed, current_course, 
                                wp_prev_lat, wp_prev_lon, wp_next_lat, wp_next_lon);
         } else {
-            // Se perder o GPS no ar, zera a inclinação e nivela a asa
             l1Guidance.roll_cmd_deg = 0.0f; 
         }
 
-        tecs.compute(target_altitude, verticalFilter.estimated_altitude_m, 
+        tecs.compute(target_alt, verticalFilter.estimated_altitude_m, 
                      verticalFilter.vertical_speed_ms, 
                      target_speed, current_ground_speed, dt);
 
