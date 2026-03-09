@@ -25,6 +25,80 @@ void SensorManager::initSensors() {
     initBMP280();
 }
 
+// Inicialização das variáveis estáticas
+float SensorManager::ground_pressure_pa = 101325.0f; // Nível do mar por defeito
+
+// ==========================================
+// CALIBRAÇÃO DO GIROSCÓPIO (FIM DO DRIFT)
+// ==========================================
+void SensorManager::calibrateIMU() {
+    Serial.println("Calibrando IMU... Mantenha a asa estatica!");
+    
+    // Zera os bias anteriores
+    gyroBias[0] = 0; gyroBias[1] = 0; gyroBias[2] = 0;
+    
+    float sum_gx = 0, sum_gy = 0, sum_gz = 0;
+    const int samples = 500;
+    RawIMU tempIMU;
+
+    delay(500); // Dá tempo para a mão do piloto largar a asa
+
+    for (int i = 0; i < samples; i++) {
+        readIMU(tempIMU); 
+        sum_gx += tempIMU.gx;
+        sum_gy += tempIMU.gy;
+        sum_gz += tempIMU.gz;
+        delay(2); // Intervalo para não saturar o bus I2C
+    }
+
+    // Calcula a média do erro estático (O que o giroscópio lê quando está parado)
+    gyroBias[0] = sum_gx / samples;
+    gyroBias[1] = sum_gy / samples;
+    gyroBias[2] = sum_gz / samples;
+
+    Serial.printf("IMU Calibrada! Erros anulados -> X:%.2f, Y:%.2f, Z:%.2f\n", 
+                  gyroBias[0], gyroBias[1], gyroBias[2]);
+}
+
+// ==========================================
+// CALIBRAÇÃO DO BARÓMETRO (ALTITUDE AGL ZERO)
+// ==========================================
+void SensorManager::calibrateBaro() {
+    Serial.println("Calibrando Barometro (Zero Ground)...");
+    
+    float sum_p = 0;
+    float temp_p, temp_t;
+    int valid_samples = 0;
+    const int samples = 100;
+
+    for (int i = 0; i < samples; i++) {
+        if (readBaro(temp_p, temp_t)) {
+            sum_p += temp_p;
+            valid_samples++;
+        }
+        delay(20); // O Barómetro tem IIR Filter, precisa de tempo entre leituras
+    }
+
+    if (valid_samples > 0) {
+        ground_pressure_pa = sum_p / valid_samples;
+        Serial.printf("Barometro Calibrado! Pressao de Solo: %.2f Pa\n", ground_pressure_pa);
+    } else {
+        Serial.println("ERRO CRITICO: Falha na calibracao do Barometro.");
+    }
+}
+
+// ==========================================
+// FÓRMULA BAROMÉTRICA (ALTITUDE RELATIVA)
+// ==========================================
+float SensorManager::getAltitudeAGL(float current_pressure_pa) {
+    if (current_pressure_pa <= 0) return 0.0f;
+    
+    // Esta é a magia: Usamos a pressão de solo que acabámos de gravar 
+    // em vez da pressão do nível do mar (101325). 
+    // Isto garante que o avião reporte 0 metros enquanto estiver na relva da pista!
+    return 44330.0f * (1.0f - pow(current_pressure_pa / ground_pressure_pa, 0.190295f));
+}
+
 void SensorManager::initMPU6050() {
     Wire.beginTransmission(MPU6050_ADDR);
     Wire.write(0x6B); // Power Management 1

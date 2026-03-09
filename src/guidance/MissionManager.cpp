@@ -127,6 +127,26 @@ float MissionManager::getActiveLon() {
     return mission[total_waypoints - 1].lon;
 }
 
+void MissionManager::saveWaypoint(uint8_t index, float lat, float lon, float alt, float speed) {
+    if (index < MAX_WAYPOINTS) {
+        mission[index].lat = lat;
+        mission[index].lon = lon;
+        mission[index].altitude_m = alt;
+        mission[index].speed_ms = speed;
+
+        // Atualiza o total de waypoints de forma dinâmica.
+        // Se a base enviar o WP 0, 1 e 2, o total passa a ser 3.
+        if (index >= total_waypoints) {
+            total_waypoints = index + 1;
+        }
+        
+        Serial.printf("WP %d Gravado na RAM! Lat: %.6f, Lon: %.6f, Alt: %.1f m\n", 
+                      index, lat, lon, alt);
+    } else {
+        Serial.println("ERRO: Indice de Waypoint excede a memoria (MAX_WAYPOINTS).");
+    }
+}
+
 // O Prev WP é fundamental para o L1 Guidance calcular a linha reta (Track)
 float MissionManager::getPrevLat() {
     if (rth_state != RTH_IDLE) return rth_climb_point.lat; // A linha é do ponto que iniciou o RTH até Casa

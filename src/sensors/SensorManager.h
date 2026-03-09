@@ -25,17 +25,24 @@ struct BMP280_Calib {
 class SensorManager {
 public:
     static void initSensors();
+    
+    // --- ROTINAS DE CALIBRAÇÃO DE SOLO (FASE 1) ---
+    static void calibrateIMU();
+    static void calibrateBaro();
+    
+    // Converte a pressão lida na altitude relativa ao solo (AGL)
+    static float getAltitudeAGL(float current_pressure_pa);
+
     static bool readIMU(RawIMU &imuData);
-    
-    // Retorna 'true' apenas se a leitura for matematicamente válida
     static bool readBaro(float &pressure, float &temperature);
-    
     static void recoverI2CBus(uint8_t sda_pin, uint8_t scl_pin);
 
 private:
     static float gyroBias[3];
-    static BMP280_Calib bmp_calib; // Armazena a calibração
-    static int32_t t_fine;         // Variável global da Bosch para precisão térmica
+    static float ground_pressure_pa; // Guarda a pressão do local de descolagem
+
+    static BMP280_Calib bmp_calib; 
+    static int32_t t_fine;         
 
     static void initMPU6050();
     static void initBMP280();

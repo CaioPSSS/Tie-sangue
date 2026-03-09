@@ -50,24 +50,48 @@ void LoRaManager::sendTelemetry(PacketTelemetryLoRa_t &packet) {
     LoRa.endPacket(); 
 }
 
-bool LoRaManager::receiveUplink(PacketUplinkLoRa_t &uplinkData, int8_t &rssi) {
-    // Verifica se chegou algo no buffer do SX1278
+LoRaPacketType LoRaManager::receive(PacketUplinkLoRa_t &rcData, PacketWaypointLoRa_t &wpData, int8_t &rssi) {
     int packetSize = LoRa.parsePacket();
     
-    // Se o tamanho bater exatamente com a nossa struct compactada (4 bytes)
-    if (packetSize == sizeof(PacketUplinkLoRa_t)) {
+    if (packetSize == 0) return PACKET_NONE; // Buffer vazio
+
+    // Espreita o primeiro byte (Sync Header) para saber o que a Ground Station enviou
+    uint8_t header = LoRa.peek(); 
+    
+    // ----------------------------------------------------
+    // CASO 1: É UM COMANDO DE VOO (STICKS RC)
+    // ----------------------------------------------------
+    if (header == 0xBB && packetSize == sizeof(PacketUplinkLoRa_t)) {
+        LoRa.readBytes((uint8_t*)&rcData, sizeof(PacketUplinkLoRa_t));
         
-        // Copia os dados do rádio direto para a memória da struct
-        LoRa.readBytes((uint8_t*)&uplinkData, sizeof(PacketUplinkLoRa_t));
-        
-        // Validação de Segurança (Ignora ruído ou pacotes corrompidos)
-        uint8_t calc_crc = CRC::calculateCRC8((uint8_t*)&uplinkData, sizeof(PacketUplinkLoRa_t) - 1);
-        
-        if (calc_crc == uplinkData.checksum_crc8 && uplinkData.sync_header == 0xBB) {
-            // Pacote perfeito! Lemos o RSSI (Qualidade do sinal de quem enviou)
+        uint8_t calc_crc = CRC::calculateCRC8((uint8_t*)&rcData, sizeof(PacketUplinkLoRa_t) - 1);
+        if (calc_crc == rcData.checksum_crc8) {
             rssi = LoRa.packetRssi(); 
-            return true; 
+            return PACKET_RC_UPLINK; 
         }
     }
-    return false; // Não chegou nada ou pacote era lixo eletromagnético
+    // ----------------------------------------------------
+    // CASO 2: É O UPLOAD DE UM WAYPOINT DA MISSÃO
+    // ----------------------------------------------------
+    else if (header == 0xCC && packetSize == sizeof(PacketWaypointLoRa_t)) {
+        LoRa.readBytes((uint8_t*)&wpData, sizeof(PacketWaypointLoRa_t));
+        
+        uint8_t calc_crc = CRC::calculateCRC8((uint8_t*)&wpData, sizeof(PacketWaypointLoRa_t) - 1);
+        if (calc_crc == wpData.checksum_crc8) {
+            rssi = LoRa.packetRssi(); 
+            return PACKET_WAYPOINT; 
+        }
+    }
+    // ----------------------------------------------------
+    // CASO 3: LIXO ELETROMAGNÉTICO OU PACOTE DE OUTRO DRONE
+    // ----------------------------------------------------
+    else {
+        // Se o tamanho não bater ou o CRC falhar, limpamos a FIFO do chip 
+        // para garantir que o rádio não trava no próximo ciclo.
+        while (LoRa.available()) {
+            LoRa.read();
+        }
+    }
+
+    return PACKET_NONE;
 }

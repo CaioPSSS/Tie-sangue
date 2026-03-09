@@ -88,6 +88,11 @@ void setup() {
     // ==========================================
     LoRaManager::init();
     SensorManager::initSensors();
+    
+    // FASE 1: CALIBRAÇÕES CRÍTICAS DE SOLO
+    SensorManager::calibrateIMU();
+    SensorManager::calibrateBaro();
+    
     OutputManager::init();
     GPSManager::init();
     BatteryManager::init();
@@ -236,21 +241,16 @@ void Task_Navigation(void *pvParameters) {
             xSemaphoreGive(stateMutex);
         }
 
-        // 2. LER SENSORES LENTOS EM SEGURANÇA (Barômetro)
+        // 2. LER SENSORES LENTOS EM SEGURANÇA (Barómetro)
         float baro_pressure, baro_temp;
         
-        // 3. FUSÃO VERTICAL (Variômetro / Kalman 1D)
-        // Lemos o barômetro E aplicamos os Sanity Checks construídos no SensorManager
+        // 3. FUSÃO VERTICAL (Variómetro / Kalman 1D)
         if (SensorManager::readBaro(baro_pressure, baro_temp)) {
-            // Leitura perfeita. Converte a pressão limpa em metros
-            float baro_alt = computeAltitude(baro_pressure);
+            // Usa a pressão do solo para descobrir a altura real da asa (AGL)
+            float baro_alt = SensorManager::getAltitudeAGL(baro_pressure);
             
-            // Atualiza o filtro com a pressão do Core 0 e a aceleração G limpa do Core 1
             verticalFilter.update(baro_alt, current_earth_z_accel, dt);
         } else {
-            // Failsafe de Hardware: O Barômetro falhou, desconectou ou entregou lixo
-            // Passamos a própria estimativa antiga de volta para ele, 
-            // forçando-o a confiar APENAS na integração inercial deste ciclo (Acelerômetro Z).
             verticalFilter.update(verticalFilter.estimated_altitude_m, current_earth_z_accel, dt);
         }
 
@@ -373,71 +373,69 @@ void Task_GPS_Parser(void *pvParameters) {
 
 void Task_LoRa_Comm(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(100); // 10 Hz (100ms)
+    const TickType_t xFrequency = pdMS_TO_TICKS(100); // 10 Hz
 
     PacketTelemetryLoRa_t telemetryPacket;
-    telemetryPacket.sync_header = 0xAA; // Byte fixo de Telemetria (TX)
+    telemetryPacket.sync_header = 0xAA; // Transmissão (TX)
 
     PacketUplinkLoRa_t uplinkPacket;
-    int8_t last_rssi = -127; // Sinal péssimo por padrão
+    PacketWaypointLoRa_t wpPacket;
+    int8_t last_rssi = -127; 
 
-    // Coloca o módulo em modo de escuta assim que a tarefa inicia
     LoRa.receive(); 
 
     for(;;) {
-        
         // =======================================================
-        // 1. OUVIR A BASE (UPLINK - RECEÇÃO RC)
+        // 1. OUVIR A BASE (MULTIPLEXAÇÃO)
         // =======================================================
-        if (LoRaManager::receiveUplink(uplinkPacket, last_rssi)) {
-            
+        LoRaPacketType pktType = LoRaManager::receive(uplinkPacket, wpPacket, last_rssi);
+
+        if (pktType == PACKET_RC_UPLINK) {
+            // Chegou Comando dos Sticks! Atualiza o controle imediatamente.
             if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-                // Conversão do Stick (-100 a 100) para Ângulo Desejado (-45º a +45º)
-                // Se você colocar o stick todo para a direita (100), pede 45 graus de Roll
                 globalState.rc_roll_cmd = (uplinkPacket.cmd_roll / 100.0f) * 45.0f;
                 globalState.rc_pitch_cmd = (uplinkPacket.cmd_pitch / 100.0f) * 45.0f;
-                
-                // Conversão do Acelerador (0 a 100) para PWM padrão (1000 a 2000us)
                 globalState.rc_throttle_pwm = 1000.0f + (uplinkPacket.cmd_throttle * 10.0f);
-                
                 globalState.current_mode = uplinkPacket.cmd_mode;
                 globalState.is_armed = (uplinkPacket.arm_switch == 1);
                 
-                // Atualiza o relógio do Failsafe (Reset ao "Deadman Switch")
+                // Reseta o "Homem-Morto" do Failsafe
                 globalState.last_rc_packet_ms = millis();
                 
                 xSemaphoreGive(stateMutex);
             }
+        } 
+        else if (pktType == PACKET_WAYPOINT) {
+            // Chegou um Waypoint! 
+            // Converte as coordenadas inteiras E7 (para poupar bits) de volta para Floats puros
+            float lat_f = wpPacket.lat_e7 / 10000000.0f;
+            float lon_f = wpPacket.lon_e7 / 10000000.0f;
+
+            // Injeta o Waypoint na memória RAM do Navegador.
+            // (Não precisa de Mutex aqui porque o MissionManager roda na Task_Navigation do próprio Core 0)
+            missionManager.saveWaypoint(wpPacket.wp_index, lat_f, lon_f, wpPacket.alt_m, wpPacket.speed_ms);
         }
 
         // =======================================================
         // 2. FALAR COM A BASE (TELEMETRIA - TRANSMISSÃO)
         // =======================================================
         if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-            telemetryPacket.fsm_state       = MODE_AUTO; 
+            telemetryPacket.fsm_state       = globalState.current_mode; // Corrigido para mandar o modo real
             telemetryPacket.altitude_cm     = (int16_t)(globalState.altitude_m * 100.0f);
             telemetryPacket.heading_deg_10  = (uint16_t)(globalState.gps_course_deg * 10.0f);
             telemetryPacket.latitude_gps    = globalState.lat; 
             telemetryPacket.longitude_gps   = globalState.lon; 
             telemetryPacket.battery_volt_mv = (uint16_t)(globalState.battery_voltage * 1000.0f);
-            
-            // Enviamos para a Ground Station a qualidade do sinal que chegou no avião!
-            // Assim o piloto no chão sabe se o avião está a ouvi-lo bem.
             telemetryPacket.rssi_uplink     = last_rssi; 
-            
             xSemaphoreGive(stateMutex);
         }
 
-        LoRaManager::sendTelemetry(telemetryPacket); // Envia (Demora uns ~20ms em SF8)
+        LoRaManager::sendTelemetry(telemetryPacket); 
 
-        // =======================================================
         // 3. VOLTAR A ESCUTAR
-        // =======================================================
-        // Como o sendTelemetry() muda o chip para modo TX, 
-        // TEMOS obrigatoriamente de mandá-lo voltar para RX (Escuta).
         LoRa.receive();
 
-        // 4. Aguarda até fechar exatos 100ms desde o início do loop
+        // 4. Aguarda ciclo exato
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }

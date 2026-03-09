@@ -32,7 +32,8 @@ public:
     // 1. Controle da Missão
     void loadMission(); // (Mockup) Carrega WPs para a RAM
     void update(float current_lat, float current_lon, float current_alt, bool is_rth_active);
-    
+    void saveWaypoint(uint8_t index, float lat, float lon, float alt, float speed);
+
     // 2. Definir o Ponto de Retorno (Home)
     void setHome(float lat, float lon, float alt);
 
