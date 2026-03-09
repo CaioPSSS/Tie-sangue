@@ -7,6 +7,7 @@
 // Inclusão das nossas classes de engenharia
 #include "control/PID.h"
 #include "control/Mixer.h"
+#include "guidance/FlightModeManager.h"
 #include "guidance/AHRS.h"
 #include "guidance/VerticalFilter.h"
 #include "guidance/L1_Guidance.h"
@@ -42,6 +43,9 @@ ElevonMixer elevonMixer;
 VerticalFilter verticalFilter;
 L1Guidance l1Guidance;
 TECS tecs;
+
+// Máquina de Estados de Voo (FSM)
+FlightModeManager fsm;
 
 // ==========================================
 // DECLARAÇÃO DAS TAREFAS
@@ -118,65 +122,85 @@ void Task_FlightLoop(void *pvParameters) {
         // 2. Atualizar AHRS (Filtro Mahony)
         ahrs.update(imuData.gx, imuData.gy, imuData.gz, imuData.ax, imuData.ay, imuData.az, dt);
 
-        // --- CALCULO TPA (Throttle PID Attenuation) ---
-        float current_throttle_pwm = 1500.0f; // TODO: Ler do receptor de rádio (ELRS)
-        float throttle_percent = constrain((current_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
-        float tpa_factor = 1.0f;
-        if (throttle_percent > 0.5f) {
-            tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
-        }
-
-        // --- 3. BUSCAR COMANDOS DO CORE 0 (Rádio LoRa ou Navegação) ---
-        float target_roll = 0.0f;
-        float target_pitch = 0.0f;
-        float current_throttle_pwm = 1000.0f; 
+        // ========================================================
+        // 3. BUSCAR COMANDOS DO CORE 0 (Rádio Humano + Navegação Auto)
+        // ========================================================
+        float rc_roll = 0.0f, rc_pitch = 0.0f, rc_throttle = 1000.0f;
+        float nav_roll = 0.0f, nav_pitch = 0.0f, nav_throttle = 0.0f;
         uint8_t current_mode = MODE_MANUAL;
+        bool is_armed = false;
         
+        // Timeout 0: Se o Core 0 estiver ocupado, não trava o Core 1. Usa os valores do ciclo passado.
         if (xSemaphoreTake(stateMutex, 0) == pdTRUE) { 
-            // Lemos os comandos dos Sticks do LoRa
-            target_roll = globalState.rc_roll_cmd;
-            target_pitch = globalState.rc_pitch_cmd;
-            current_throttle_pwm = globalState.rc_throttle_pwm;
+            // Inputs Humanos do Rádio LoRa
+            rc_roll = globalState.rc_roll_cmd;
+            rc_pitch = globalState.rc_pitch_cmd;
+            rc_throttle = globalState.rc_throttle_pwm;
             current_mode = globalState.current_mode;
+            is_armed = globalState.is_armed;
             
-            // (Mais tarde, se current_mode == MODE_AUTO, nós substituímos 
-            // target_roll pelo globalState.desired_roll_cmd gerado pelo L1 Guidance!)
+            // Inputs Autônomos (Gerados pelo L1 e TECS na Task_Navigation)
+            nav_roll = globalState.desired_roll_cmd;
+            nav_pitch = globalState.desired_pitch_cmd;
+            nav_throttle = globalState.desired_throttle;
             
-            // Grava os dados da IMU para o Core 0 usar depois
+            // Grava os dados limpos da IMU para o Core 0 usar
             globalState.roll_deg = ahrs.roll;
             globalState.pitch_deg = ahrs.pitch;
             globalState.earth_z_accel = ahrs.earth_z_accel;
             xSemaphoreGive(stateMutex);
         }
 
-        // --- CÁLCULO DO TPA (Throttle PID Attenuation) ---
-        // Agora usando o acelerador real do rádio LoRa!
-        float throttle_percent = constrain((current_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
-        float tpa_factor = 1.0f;
-        if (throttle_percent > 0.5f) {
-            tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
+        // ========================================================
+        // 4. MÁQUINA DE ESTADOS (O Cérebro da Asa)
+        // ========================================================
+        // A FSM decide se ignora os PIDs (Modo Manual) ou se funde o L1/TECS
+        fsm.update(current_mode, 
+                   rc_roll, rc_pitch, rc_throttle,
+                   nav_roll, nav_pitch, nav_throttle,
+                   rollAnglePID, pitchAnglePID, rollRatePID, pitchRatePID);
+
+        // ========================================================
+        // 5. MALHAS DE CONTROLE PID E MIXER (Músculos)
+        // ========================================================
+        float mixer_roll_cmd = 0.0f;
+        float mixer_pitch_cmd = 0.0f;
+
+        if (fsm.bypass_pids) {
+            // MODO MANUAL: Morte aos PIDs. Você está no controle direto (Pass-through).
+            mixer_roll_cmd = fsm.final_roll_target;
+            mixer_pitch_cmd = fsm.final_pitch_target;
+        } else {
+            // MODOS ESTABILIZADOS/AUTÔNOMOS: PIDs em Cascata assumem o comando.
+            
+            // Cálculo dinâmico do TPA com base no acelerador que a FSM escolheu usar
+            float throttle_percent = constrain((fsm.final_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
+            float tpa_factor = 1.0f;
+            if (throttle_percent > 0.5f) {
+                tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
+            }
+
+            // Malha Externa (Transforma o Ângulo alvo numa Rotação desejada)
+            float desired_roll_rate = rollAnglePID.compute(fsm.final_roll_target, ahrs.roll, dt, 1.0f);
+            float desired_pitch_rate = pitchAnglePID.compute(fsm.final_pitch_target, ahrs.pitch, dt, 1.0f);
+
+            // Malha Interna (Luta contra a turbulência medindo a Rotação real do Giroscópio)
+            mixer_roll_cmd = rollRatePID.compute(desired_roll_rate, imuData.gx, dt, tpa_factor);
+            mixer_pitch_cmd = pitchRatePID.compute(desired_pitch_rate, imuData.gy, dt, tpa_factor);
         }
 
-        // 4. MALHAS DE CONTROLE PID (Angle -> Rate)
-        // O avião agora tenta seguir o ângulo que você comandou no joystick do PC!
-        float desired_roll_rate = rollAnglePID.compute(target_roll, ahrs.roll, dt, 1.0f);
-        float desired_pitch_rate = pitchAnglePID.compute(target_pitch, ahrs.pitch, dt, 1.0f);
-
-        // Aqui aplicamos o tpa_factor apenas na malha de Rate (que sofre com a vibração em alta velocidade)
-        float mixer_roll_cmd = rollRatePID.compute(desired_roll_rate, /*imuData.gx*/ 0.0f, dt, tpa_factor);
-        float mixer_pitch_cmd = pitchRatePID.compute(desired_pitch_rate, /*imuData.gy*/ 0.0f, dt, tpa_factor);
-
-        // 5. MATRIZ DE ELEVONS
+        // ========================================================
+        // 6. MATRIZ DE ELEVONS E SAÍDA DE POTÊNCIA
+        // ========================================================
         elevonMixer.compute(mixer_pitch_cmd, mixer_roll_cmd);
 
-        // 6. SAÍDA FÍSICA PARA O HARDWARE
-        // Pega os sinais gerados pela matriz e aplica nos pinos dos servos
+        // Envia o pulso elétrico para os Servos Esquerdo e Direito
         OutputManager::writeServos(elevonMixer.servo_left_pwm, elevonMixer.servo_right_pwm);
 
-        // Manda o motor rodar com base no que você pediu no rádio LoRa,
-        // mas só permite se a variável is_armed estiver verde (Chave acionada no PC).
-        OutputManager::writeMotor(current_throttle_pwm, globalState.is_armed);
+        // Envia energia para o Motor (Somente se a chave "Arm" do rádio estiver ativa)
+        OutputManager::writeMotor(fsm.final_throttle_pwm, is_armed);
         
+        // Cede o processamento e aguarda até fechar 4ms exatos
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
