@@ -12,6 +12,7 @@
 #include "guidance/L1_Guidance.h"
 #include "guidance/TECS.h"
 #include "sensors/SensorManager.h"
+#include "sensors/GPSManager.h"
 #include "hardware/OutputManager.h"
 #include "common/SharedTypes.h"
 #include "comms/LoRaManager.h"
@@ -66,14 +67,13 @@ void setup() {
         while(1); // Trava o sistema
     }
 
-    //INICIAR O LORA:
+    // ==========================================
+    // INICIALIZAÇÃO DOS MÓDULOS DE HARDWARE
+    // ==========================================
     LoRaManager::init();
-
-    //INICIAR OS SENSORES:
-    SensorManager::initSensors(); 
-
-    //INICIAR OS ATUADORES:
+    SensorManager::initSensors();
     OutputManager::init();
+    GPSManager::init();
 
     // --- INSTANCIAÇÃO DAS TAREFAS NO CORE 1 (Prioridade Máxima) ---
     xTaskCreatePinnedToCore(Task_FlightLoop, "FlightLoop", 8192, NULL, 5, NULL, 1);
@@ -234,7 +234,38 @@ void Task_Navigation(void *pvParameters) {
 // ==========================================
 void Task_GPS_Parser(void *pvParameters) {
     for(;;) {
-        // TODO: Ler Serial2, rodar TinyGPS++, atualizar globalState.lat / lon / course
+        // O update() lê a Serial2 de forma não bloqueante.
+        // Se retornar true, significa que o NEO-6M acabou de calcular uma nova posição.
+        if (GPSManager::update()) {
+            
+            // Só escrevemos no estado global se o FIX for válido 
+            // (evita enviar dados de latitude 0,0 para o algoritmo de L1 Guidance)
+            if (GPSManager::hasValidFix()) {
+                
+                // Bloqueia a memória rapidamente para atualizar a cartografia
+                if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+                    
+                    globalState.lat = GPSManager::getLatitudeE7();
+                    globalState.lon = GPSManager::getLongitudeE7();
+                    globalState.ground_speed_ms = GPSManager::getSpeedMPS();
+                    globalState.gps_course_deg = GPSManager::getCourseDeg();
+                    globalState.gps_fix = true;
+                    
+                    xSemaphoreGive(stateMutex);
+                    
+                    // Nota de Debug: Se testar no exterior, quando os LEDs do NEO-6M piscarem,
+                    // deverá ver coordenadas próximas de -1297XXXXX, -3850XXXXX (região de Salvador).
+                }
+            } else {
+                // Se perdermos o sinal (ex: nuvens densas, interferência severa do VTX)
+                if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+                    globalState.gps_fix = false;
+                    xSemaphoreGive(stateMutex);
+                }
+            }
+        }
+        
+        // Cede tempo para o FreeRTOS cuidar da Task_LoRa_Comm e Task_Navigation do Core 0
         vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
