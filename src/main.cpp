@@ -3,8 +3,6 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include <freertos/queue.h>
-#include "common/SharedTypes.h"
-#include "comms/LoRaManager.h"
 
 // Inclusão das nossas classes de engenharia
 #include "control/PID.h"
@@ -14,6 +12,9 @@
 #include "guidance/L1_Guidance.h"
 #include "guidance/TECS.h"
 #include "sensors/SensorManager.h"
+#include "hardware/OutputManager.h"
+#include "common/SharedTypes.h"
+#include "comms/LoRaManager.h"
 
 // ==========================================
 // VARIÁVEIS GLOBAIS DE IPC (Inter-Process Comm)
@@ -70,6 +71,9 @@ void setup() {
 
     //INICIAR OS SENSORES:
     SensorManager::initSensors(); 
+
+    //INICIAR OS ATUADORES:
+    OutputManager::init();
 
     // --- INSTANCIAÇÃO DAS TAREFAS NO CORE 1 (Prioridade Máxima) ---
     xTaskCreatePinnedToCore(Task_FlightLoop, "FlightLoop", 8192, NULL, 5, NULL, 1);
@@ -149,10 +153,16 @@ void Task_FlightLoop(void *pvParameters) {
         float mixer_roll_cmd = rollRatePID.compute(desired_roll_rate, /*imuData.gx*/ 0.0f, dt, tpa_factor);
         float mixer_pitch_cmd = pitchRatePID.compute(desired_pitch_rate, /*imuData.gy*/ 0.0f, dt, tpa_factor);
 
-        // 5. MATRIZ DE ELEVONS E SAÍDA PWM
+        // 5. MATRIZ DE ELEVONS
         elevonMixer.compute(mixer_pitch_cmd, mixer_roll_cmd);
-        // servoLeft.writeMicroseconds(elevonMixer.servo_left_pwm);
-        // servoRight.writeMicroseconds(elevonMixer.servo_right_pwm);
+
+        // 6. SAÍDA FÍSICA PARA O HARDWARE
+        // Pega os sinais gerados pela matriz e aplica nos pinos dos servos
+        OutputManager::writeServos(elevonMixer.servo_left_pwm, elevonMixer.servo_right_pwm);
+
+        // Manda o motor rodar com base no que você pediu no rádio LoRa,
+        // mas só permite se a variável is_armed estiver verde (Chave acionada no PC).
+        OutputManager::writeMotor(current_throttle_pwm, globalState.is_armed);
         
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
