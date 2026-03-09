@@ -109,13 +109,21 @@ void Task_FlightLoop(void *pvParameters) {
             tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
         }
 
-        // 3. BUSCAR COMANDOS DO CORE 0 (Navegação Automática)
+        // --- 3. BUSCAR COMANDOS DO CORE 0 (Rádio LoRa ou Navegação) ---
         float target_roll = 0.0f;
         float target_pitch = 0.0f;
+        float current_throttle_pwm = 1000.0f; 
+        uint8_t current_mode = MODE_MANUAL;
         
-        if (xSemaphoreTake(stateMutex, 0) == pdTRUE) { // Não bloqueia (timeout 0)
-            target_roll = globalState.desired_roll_cmd;
-            target_pitch = globalState.desired_pitch_cmd;
+        if (xSemaphoreTake(stateMutex, 0) == pdTRUE) { 
+            // Lemos os comandos dos Sticks do LoRa
+            target_roll = globalState.rc_roll_cmd;
+            target_pitch = globalState.rc_pitch_cmd;
+            current_throttle_pwm = globalState.rc_throttle_pwm;
+            current_mode = globalState.current_mode;
+            
+            // (Mais tarde, se current_mode == MODE_AUTO, nós substituímos 
+            // target_roll pelo globalState.desired_roll_cmd gerado pelo L1 Guidance!)
             
             // Grava os dados da IMU para o Core 0 usar depois
             globalState.roll_deg = ahrs.roll;
@@ -124,7 +132,16 @@ void Task_FlightLoop(void *pvParameters) {
             xSemaphoreGive(stateMutex);
         }
 
+        // --- CÁLCULO DO TPA (Throttle PID Attenuation) ---
+        // Agora usando o acelerador real do rádio LoRa!
+        float throttle_percent = constrain((current_throttle_pwm - 1000.0f) / 1000.0f, 0.0f, 1.0f);
+        float tpa_factor = 1.0f;
+        if (throttle_percent > 0.5f) {
+            tpa_factor = 1.0f - ((throttle_percent - 0.5f) * 0.6f); 
+        }
+
         // 4. MALHAS DE CONTROLE PID (Angle -> Rate)
+        // O avião agora tenta seguir o ângulo que você comandou no joystick do PC!
         float desired_roll_rate = rollAnglePID.compute(target_roll, ahrs.roll, dt, 1.0f);
         float desired_pitch_rate = pitchAnglePID.compute(target_pitch, ahrs.pitch, dt, 1.0f);
 
@@ -226,19 +243,28 @@ void Task_LoRa_Comm(void *pvParameters) {
     LoRa.receive(); 
 
     for(;;) {
+        
         // =======================================================
-        // 1. OUVIR A BASE (UPLINK - RECEÇÃO)
+        // 1. OUVIR A BASE (UPLINK - RECEÇÃO RC)
         // =======================================================
         if (LoRaManager::receiveUplink(uplinkPacket, last_rssi)) {
-            // Chegou um comando seguro e validado pelo CRC8!
-            Serial.printf("Comando Recebido! ID: %d, Payload: %d\n", uplinkPacket.command_id, uplinkPacket.payload);
             
-            // Exemplo de execução: A base mandou forçar o Return To Home (Comando ID = 1)
-            if (uplinkPacket.command_id == 1) { 
-                if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-                    // globalState.fsm_mode = uplinkPacket.payload; // Força a Máquina de Estados (Futuro)
-                    xSemaphoreGive(stateMutex);
-                }
+            if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+                // Conversão do Stick (-100 a 100) para Ângulo Desejado (-45º a +45º)
+                // Se você colocar o stick todo para a direita (100), pede 45 graus de Roll
+                globalState.rc_roll_cmd = (uplinkPacket.cmd_roll / 100.0f) * 45.0f;
+                globalState.rc_pitch_cmd = (uplinkPacket.cmd_pitch / 100.0f) * 45.0f;
+                
+                // Conversão do Acelerador (0 a 100) para PWM padrão (1000 a 2000us)
+                globalState.rc_throttle_pwm = 1000.0f + (uplinkPacket.cmd_throttle * 10.0f);
+                
+                globalState.current_mode = uplinkPacket.cmd_mode;
+                globalState.is_armed = (uplinkPacket.arm_switch == 1);
+                
+                // Atualiza o relógio do Failsafe (Reset ao "Deadman Switch")
+                globalState.last_rc_packet_ms = millis();
+                
+                xSemaphoreGive(stateMutex);
             }
         }
 

@@ -42,6 +42,14 @@ struct FlightState {
     float ground_speed_ms;
     float gps_course_deg;       // COG (Course over ground)
     bool gps_fix;
+
+    // --- DADOS DO RÁDIO LORA (C2 - Command & Control) ---
+    float rc_roll_cmd;      // Convertido para graus (ex: -45.0 a 45.0)
+    float rc_pitch_cmd;     // Convertido para graus (ex: -45.0 a 45.0)
+    float rc_throttle_pwm;  // Convertido de volta para 1000 a 2000us para o Mixer
+    uint8_t current_mode;
+    bool is_armed;
+    uint32_t last_rc_packet_ms; // CRÍTICO PARA O FAILSAFE!
     
     // --- DADOS DE SISTEMA ---
     float battery_voltage;
@@ -57,14 +65,17 @@ enum FlightMode {
 };
 
 // --------------------------------------------------------
-// 3. ESTRUTURA DE COMANDOS (UPLINK: BASE -> DRONE) - 4 BYTES
-// Usada para o avião ler ordens de emergência ou mudança de modo
+// 3. ESTRUTURA DE COMANDOS (UPLINK: BASE -> DRONE) - 8 BYTES
+// O seu "Controle Remoto" via LoRa
 // --------------------------------------------------------
 typedef struct __attribute__((packed)) {
-    uint8_t   sync_header;   // Identificador de pacote (Ex: 0xBB)
-    uint8_t   command_id;    // ID da ação (Ex: 1 = Mudar Modo, 2 = Atualizar WP)
-    uint8_t   payload;       // Valor da ação (Ex: MODE_RTH)
-    uint8_t   checksum_crc8; // Validador
+    uint8_t sync_header;    // Identificador (Ex: 0xBB)
+    int8_t  cmd_roll;       // Stick de Rolagem (-100 a 100)
+    int8_t  cmd_pitch;      // Stick de Arfagem (-100 a 100)
+    uint8_t cmd_throttle;   // Stick de Acelerador (0 a 100)
+    uint8_t cmd_mode;       // Chave de Modo de Voo (Manual, Angle, Auto, RTH)
+    uint8_t arm_switch;     // Chave de Armar Motores (0 = Desarmado, 1 = Armado)
+    uint8_t checksum_crc8;  // Validador
 } PacketUplinkLoRa_t;
 
 #endif
