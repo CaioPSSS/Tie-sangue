@@ -252,8 +252,9 @@ void Task_Navigation(void *pvParameters) {
         float dt = (now_us - last_time_us) / 1000000.0f; 
         last_time_us = now_us;
         
-        // Proteção extra: a navegação corre a 50Hz (20ms). Limita a 50ms máximo se houver atraso.
+        // Proteção extra: a navegação corre a 50Hz (20ms). Limita a 50ms máximo se houver atraso. E a 0.5ms mínimo para evitar divisão por zero.
         if (dt > 0.050f) dt = 0.020f;
+        if (dt <= 0.001f) dt = 0.020f;
 
         // 1. Variáveis de Estado Local
         float current_earth_z_accel = 0.0f;
@@ -322,7 +323,7 @@ void Task_Navigation(void *pvParameters) {
         float target_alt = 0.0f, target_speed = 0.0f;
 
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-            missionManager.update(current_lat, current_lon, verticalFilter.estimated_altitude_m, force_rth);
+            missionManager.update((float)current_lat, (float)current_lon, verticalFilter.estimated_altitude_m, force_rth);
             
             wp_prev_lat   = missionManager.getPrevLat();
             wp_prev_lon   = missionManager.getPrevLon();
@@ -454,7 +455,7 @@ void Task_LoRa_Comm(void *pvParameters) {
 
             // Protege o MissionManager com Mutex contra conflitos com a Task_Navigation
             if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-                missionManager.saveWaypoint(wpPacket.wp_index, lat_f, lon_f, wpPacket.alt_m, wpPacket.speed_ms);
+                missionManager.saveWaypoint(wpPacket.wp_index, (double)lat_f, (double)lon_f, wpPacket.alt_m, wpPacket.speed_ms);
                 xSemaphoreGive(stateMutex);
             }
         }

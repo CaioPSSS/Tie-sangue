@@ -210,9 +210,9 @@ bool SensorManager::readIMU(RawIMU &imuData) {
     i2c_master_read(cmd, buffer, 14, I2C_MASTER_LAST_NACK); // Lê 14 bytes de rajada
     i2c_master_stop(cmd);
 
-    // Dispara o hardware! Timeout estrito de 1 TICK (1 ms).
+    // Dispara o hardware! Timeout estrito de 2 TICKS (2 ms).
     // Se o MPU6050 não responder, o ESP32 aborta e o Core 1 não trava.
-    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1));
+    esp_err_t ret = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(2));
     i2c_cmd_link_delete(cmd);
 
     // Se falhar em ler, devolve false (Task usa os dados antigos/inerciais)

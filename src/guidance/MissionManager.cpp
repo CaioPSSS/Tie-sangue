@@ -8,7 +8,6 @@ MissionManager::MissionManager() {
     has_valid_home = false; 
     
     home_wp = {0.0, 0.0, 0.0f, cruise_speed, false};
-    rth_climb_point = {0.0, 0.0, 0.0f, cruise_speed, false};
     
     // [CORREÇÃO SPRINT 2]: Limpa a RAM para evitar lixo
     for(int i=0; i<MAX_WAYPOINTS; i++) {
@@ -16,7 +15,7 @@ MissionManager::MissionManager() {
     }
 }
 
-void MissionManager::saveWaypoint(uint8_t index, float lat, float lon, float alt, float speed) {
+void MissionManager::saveWaypoint(uint8_t index, double lat, double lon, float alt, float speed) {
     if (index < MAX_WAYPOINTS) {
         mission[index].lat = lat;
         mission[index].lon = lon;
@@ -32,7 +31,7 @@ void MissionManager::saveWaypoint(uint8_t index, float lat, float lon, float alt
     }
 }
 
-void MissionManager::setHome(float lat, float lon, float alt) {
+void MissionManager::setHome(double lat, double lon, float alt) {
     home_wp.lat = lat;
     home_wp.lon = lon;
     home_wp.altitude_m = alt;
