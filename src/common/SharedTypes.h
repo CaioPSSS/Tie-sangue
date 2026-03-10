@@ -50,9 +50,10 @@ struct FlightState {
     float rc_pitch_cmd;     // Convertido para graus (ex: -45.0 a 45.0)
     float rc_throttle_pwm;  // Convertido de volta para 1000 a 2000us para o Mixer
     uint8_t current_mode;
-    bool is_armed;
+    bool is_armed; 
     uint32_t last_rc_packet_ms; // CRÍTICO PARA O FAILSAFE!
     bool has_received_first_packet; // Para evitar o Failsafe antes do primeiro contato com a base
+    bool failsafe_override; //Bloqueio de hierarquia para impedir que o Rádio sobrescreva emergências do sistema
     
     // --- DADOS DE SISTEMA ---
     float battery_voltage;

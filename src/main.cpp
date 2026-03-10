@@ -350,14 +350,9 @@ void Task_Navigation(void *pvParameters) {
             l1Guidance.roll_cmd_deg = 0.0f;
         }
 
-        // Vento Sintético 
-        float wind_correction_angle = (current_course - ahrs_yaw) * (PI / 180.0f);
-        float synthetic_airspeed = current_ground_speed * cos(wind_correction_angle);
-        if (synthetic_airspeed < 5.0f) synthetic_airspeed = 5.0f; 
-
-        tecs.compute(target_alt, verticalFilter.estimated_altitude_m, 
+       tecs.compute(target_alt, verticalFilter.estimated_altitude_m, 
                      verticalFilter.vertical_speed_ms, 
-                     target_speed, synthetic_airspeed, dt);
+                     target_speed, current_ground_speed, dt);
 
         // 6. ENVIAR COMANDOS PARA O CORE 1
         if(xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
@@ -425,14 +420,31 @@ void Task_LoRa_Comm(void *pvParameters) {
         // 1. OUVIR A BASE (MULTIPLEXAÇÃO)
         LoRaPacketType pktType = LoRaManager::receive(uplinkPacket, wpPacket, last_rssi);
 
+        // Leitura da bateria em rotina de 10 Hz
+        float current_vbat = BatteryManager::readVoltage();
+
         if (pktType == PACKET_RC_UPLINK) {
             if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
+                globalState.has_received_first_packet = true;
+                globalState.last_rc_packet_ms = millis();
                 globalState.rc_roll_cmd = (uplinkPacket.cmd_roll / 100.0f) * 45.0f;
                 globalState.rc_pitch_cmd = (uplinkPacket.cmd_pitch / 100.0f) * 45.0f;
                 globalState.rc_throttle_pwm = 1000.0f + (uplinkPacket.cmd_throttle * 10.0f);
                 globalState.current_mode = uplinkPacket.cmd_mode;
                 globalState.is_armed = (uplinkPacket.arm_switch == 1);
-                globalState.last_rc_packet_ms = millis();
+                globalState.battery_voltage = current_vbat;
+
+                if (!globalState.failsafe_override) {
+                    uint8_t req_mode = uplinkPacket.cmd_mode;
+                    
+                    // Impede ativação de modos autónomos se não houver fixação GPS!
+                    if ((req_mode == MODE_AUTO || req_mode == MODE_RTH || req_mode == MODE_HOLD) && !globalState.gps_fix) {
+                        globalState.current_mode = MODE_ANGLE; // Degradação segura
+                    } else {
+                        globalState.current_mode = req_mode;
+                    }
+                }
+
                 xSemaphoreGive(stateMutex);
             }
         } 
@@ -466,23 +478,23 @@ void Task_LoRa_Comm(void *pvParameters) {
 }
 
 void Task_System_Mon(void *pvParameters) {
-    esp_task_wdt_add(NULL);
+    esp_task_wdt_add(NULL); 
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(1000); // 1 Hz
+    const TickType_t xFrequency = pdMS_TO_TICKS(1000); 
 
     for(;;) {
-        esp_task_wdt_reset();
-        // 1. Lê a Bateria
-        float current_vbat = BatteryManager::readVoltage();
+        esp_task_wdt_reset(); 
 
         if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-            globalState.battery_voltage = current_vbat;
             
-            // 2. Failsafe Físico (Bateria Crítica Li-ion 2S < 6.4V)
-            // A verificação > 3.0f evita falsos positivos caso a bateria esteja desligada (ADC a flutuar)
-            if (current_vbat < 6.4f && current_vbat > 3.0f) {
-                Serial.printf("ALERTA: BATERIA CRITICA! Forcando RTH (%.2f V)\n", current_vbat);
-                globalState.current_mode = MODE_RTH; // Sobrescreve a vontade do piloto
+            // Lê a bateria já limpa e estabilizada pela rotina de 10Hz
+            float vbat_stable = globalState.battery_voltage;
+            
+            // [CORREÇÃO SPRINT 4]: Conflito Mestre-Escravo resolvido com a flag de Override
+            if (vbat_stable < 6.4f && vbat_stable > 3.0f) {
+                Serial.printf("ALERTA: BATERIA CRITICA! Forcando RTH (%.2f V)\n", vbat_stable);
+                globalState.current_mode = MODE_RTH; 
+                globalState.failsafe_override = true; // Tranca o modo. O piloto não consegue cancelar!
             }
             
             xSemaphoreGive(stateMutex);
