@@ -9,7 +9,7 @@
 // O ESP32 pode usar quase qualquer pino para PWM. Escolha pinos
 // que não interfiram no Boot (evite 0, 2, 5, 12, 15).
 #define PIN_SERVO_LEFT  13
-#define PIN_SERVO_RIGHT 14
+#define PIN_SERVO_RIGHT 12
 #define PIN_ESC_MOTOR   27
 
 // --------------------------------------------------------
