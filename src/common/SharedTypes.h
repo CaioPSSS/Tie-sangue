@@ -4,13 +4,19 @@
 #include <Arduino.h>
 
 // --------------------------------------------------------
-// 1. ESTRUTURA DE TELEMETRIA LORA (COMPACTADA - 18 BYTES)
+// 1. ESTRUTURA DE TELEMETRIA LORA (COMPACTADA - 22 BYTES)
 // Usada pela Task_LoRa_Comm para enviar para a Ground Station
 // --------------------------------------------------------
 typedef struct __attribute__((packed)) {
     uint8_t   sync_header;      // Métrica de prefixação Sincronizadora (Ex: 0xAA)
     uint8_t   fsm_state;        // Modo de voo atual (Manual, Angle, RTH, etc)
     int16_t   altitude_cm;      // Altitude barométrica filtrada (+- 32km)
+    
+    // --- NOVOS DADOS DE ATITUDE (HORIZONTE ARTIFICIAL) ---
+    int16_t   roll_deg_10;      // Roll em décimos de grau (Ex: 455 = 45.5º)
+    int16_t   pitch_deg_10;     // Pitch em décimos de grau (Ex: -150 = -15.0º)
+    // -----------------------------------------------------
+
     uint16_t  heading_deg_10;   // Proa em décimos de grau (Ex: 3599 = 359.9º)
     int32_t   latitude_gps;     // Lat bruta * 10^7
     int32_t   longitude_gps;    // Lon bruta * 10^7

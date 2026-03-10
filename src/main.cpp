@@ -464,11 +464,19 @@ void Task_LoRa_Comm(void *pvParameters) {
         if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
             telemetryPacket.fsm_state       = globalState.current_mode; 
             telemetryPacket.altitude_cm     = (int16_t)(globalState.altitude_m * 100.0f);
+            
+            // --- CONVERSÃO DA INCLINAÇÃO PARA A ESTAÇÃO DE SOLO ---
+            // Multiplicamos por 10 para não perder a casa decimal num número inteiro
+            telemetryPacket.roll_deg_10     = (int16_t)(globalState.roll_deg * 10.0f);
+            telemetryPacket.pitch_deg_10    = (int16_t)(globalState.pitch_deg * 10.0f);
+            // ------------------------------------------------------
+            
             telemetryPacket.heading_deg_10  = (uint16_t)(globalState.gps_course_deg * 10.0f);
             telemetryPacket.latitude_gps    = globalState.lat; 
             telemetryPacket.longitude_gps   = globalState.lon; 
             telemetryPacket.battery_volt_mv = (uint16_t)(globalState.battery_voltage * 1000.0f);
             telemetryPacket.rssi_uplink     = last_rssi; 
+            
             xSemaphoreGive(stateMutex);
         }
 
