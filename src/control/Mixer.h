@@ -10,8 +10,8 @@ public:
     bool invert_right = false;
     
     // Trims mecânicos em microssegundos (usados para centralizar ou dar reflexo de perfil)
-    int16_t trim_left = 0;
-    int16_t trim_right = 0;
+    int16_t trim_left = 40; // Criar perfil reflex artificial
+    int16_t trim_right = 40; // Criar perfil reflex artificial
 
     // Saídas finais prontas para a biblioteca ESP32Servo (em microssegundos)
     uint16_t servo_left_pwm;

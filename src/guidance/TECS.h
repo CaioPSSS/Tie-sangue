@@ -6,10 +6,10 @@
 class TECS {
 public:
     // Limites de Segurança Aerodinâmica (Tuning)
-    float min_airspeed = 10.0f;     // m/s (Velocidade de Estol - Emergência Máxima)
-    float safe_airspeed = 12.0f;    // m/s (Início da transição suave anti-estol)
-    float cruise_airspeed = 15.0f;  // m/s (Velocidade de máxima eficiência)
-    float max_airspeed = 25.0f;     // m/s (Limite estrutural)
+    float min_airspeed = 9.0f;     // m/s (Velocidade de Estol - Emergência Máxima)
+    float safe_airspeed = 11.0f;    // m/s (Início da transição suave anti-estol)
+    float cruise_airspeed = 14.0f;  // m/s (Velocidade de máxima eficiência)
+    float max_airspeed = 24.0f;     // m/s (Limite estrutural)
     
     float max_pitch_deg = 20.0f;    // Nariz para cima (Evita estol de atitude)
     float min_pitch_deg = -15.0f;   // Nariz para baixo (Mergulho de recuperação)

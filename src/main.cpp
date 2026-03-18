@@ -35,11 +35,11 @@ QueueHandle_t telemetryQueue;          // Fila para enviar dados para a Task LoR
 // ==========================================
 // PIDs de Rate (Taxa) -> P, I, D, FF, Max_I, Max_Out
 PID rollRatePID(0.5, 0.1, 0.02, 0.8, 100.0, 500.0);
-PID pitchRatePID(0.6, 0.15, 0.03, 0.9, 100.0, 500.0);
+PID pitchRatePID(0.4, 0.10, 0.02, 0.6, 100.0, 500.0);
 
 // PIDs de Angle (Atitude) -> Apenas P
 PID rollAnglePID(4.0, 0.0, 0.0, 0.0, 0.0, 300.0);
-PID pitchAnglePID(5.0, 0.0, 0.0, 0.0, 0.0, 300.0);
+PID pitchAnglePID(3.5, 0.0, 0.0, 0.0, 0.0, 300.0);
 
 // Módulos de Estabilidade e Navegação
 AHRS ahrs;
