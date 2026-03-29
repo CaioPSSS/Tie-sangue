@@ -5,13 +5,13 @@
 
 class TECS {
 public:
-    // Limites de Segurança Aerodinâmica (Tuning)
-    float min_airspeed = 9.0f;     // m/s (Velocidade de Estol - Emergência Máxima)
-    float safe_airspeed = 11.0f;    // m/s (Início da transição suave anti-estol)
-    float cruise_airspeed = 14.0f;  // m/s (Velocidade de máxima eficiência)
-    float max_airspeed = 24.0f;     // m/s (Limite estrutural)
+    // [ATUALIZAÇÃO FINAL] Limites de Segurança Aerodinâmica (Envergadura 61cm | 2S 1000KV)
+    float min_airspeed = 8.5f;      // m/s (Limite da morte na curva)
+    float safe_airspeed = 9.5f;     // m/s (Transição suave do anti-estol)
+    float cruise_airspeed = 11.5f;  // m/s (~41 km/h - Ponto ideal do motor 2S)
+    float max_airspeed = 14.5f;     // m/s (Limite físico do "Pitch Speed" da hélice 1045)
     
-    float max_pitch_deg = 20.0f;    // Nariz para cima (Evita estol de atitude)
+    float max_pitch_deg = 15.0f;    // Reduzido para 15º (Como o motor é lento, subir muito íngreme causa estol rápido)
     float min_pitch_deg = -15.0f;   // Nariz para baixo (Mergulho de recuperação)
 
     // Ganhos dos Controladores PI do TECS

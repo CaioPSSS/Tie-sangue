@@ -5,10 +5,10 @@
 
 class L1Guidance {
 public:
-    // Parâmetros de Ajuste (Tuning)
-    float l1_period = 14.0f;       // Período de amortecimento em segundos (Define a agressividade)
-    float l1_damping = 0.85f;      // Fator de amortecimento (0.75 a 0.85 é ideal para asas voadoras)
-    float max_roll_angle = 35.0f;  // Limite máximo de inclinação em graus para segurança
+    // [ATUALIZAÇÃO FINAL] Parâmetros Anti-Tip Stall para Asa de 61cm
+    float l1_period = 15.0f;       // Aumentado (Curvas majestosas e bem abertas)
+    float l1_damping = 0.85f;      // Fator de amortecimento máximo
+    float max_roll_angle = 35.0f;  // Proteção rigorosa contra Tip Stall
 
     // Saída principal para o Core 1 (Pitch/Roll PIDs)
     float roll_cmd_deg;

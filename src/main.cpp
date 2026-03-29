@@ -33,9 +33,9 @@ QueueHandle_t telemetryQueue;          // Fila para enviar dados para a Task LoR
 // ==========================================
 // INSTÂNCIA DOS OBJETOS DE VOO (Globais)
 // ==========================================
-// PIDs de Rate (Taxa) -> P, I, D, FF, Max_I, Max_Out
+// PIDs de Rate (Taxa) -> Restauramos um pouco do P e FF do Pitch pelos elevons menores
 PID rollRatePID(0.5, 0.1, 0.02, 0.8, 100.0, 500.0);
-PID pitchRatePID(0.4, 0.10, 0.02, 0.6, 100.0, 500.0);
+PID pitchRatePID(0.5, 0.10, 0.02, 0.7, 100.0, 500.0); // Ganho P subiu de 0.4 para 0.5
 
 // PIDs de Angle (Atitude) -> Apenas P
 PID rollAnglePID(4.0, 0.0, 0.0, 0.0, 0.0, 300.0);
@@ -450,12 +450,12 @@ void Task_LoRa_Comm(void *pvParameters) {
             }
         } 
         else if (pktType == PACKET_WAYPOINT) {
-            float lat_f = wpPacket.lat_e7 / 10000000.0f;
-            float lon_f = wpPacket.lon_e7 / 10000000.0f;
+            double lat_d = wpPacket.lat_e7 / 10000000.0;
+            double lon_d = wpPacket.lon_e7 / 10000000.0;
 
             // Protege o MissionManager com Mutex contra conflitos com a Task_Navigation
             if (xSemaphoreTake(stateMutex, portMAX_DELAY) == pdTRUE) {
-                missionManager.saveWaypoint(wpPacket.wp_index, (double)lat_f, (double)lon_f, wpPacket.alt_m, wpPacket.speed_ms);
+                missionManager.saveWaypoint(wpPacket.wp_index, lat_d, lon_d, wpPacket.alt_m, wpPacket.speed_ms);
                 xSemaphoreGive(stateMutex);
             }
         }
